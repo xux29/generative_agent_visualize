@@ -33,6 +33,20 @@ class Timer:
     def forward(self, offset):
         self._offset += datetime.timedelta(minutes=offset)
 
+    def jump_to(self, target_time):
+        """直接跳跃到目标时间"""
+        if isinstance(target_time, datetime.datetime):
+            self._offset = target_time
+        elif isinstance(target_time, str):
+            d_format = "%Y%m%d-%H:%M" if "-" in target_time else "%H:%M"
+            self._offset = to_date(target_time, d_format)
+        else:
+            raise ValueError("target_time must be datetime or string")
+
+    def set_time_of_day(self, hour, minute=0, second=0):
+        """设置当天的特定时间"""
+        self._offset = self._offset.replace(hour=hour, minute=minute, second=second, microsecond=0)
+
     def get_date(self, date_format=""):
         date = self._offset
         if date_format:

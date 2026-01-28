@@ -1,0 +1,67 @@
+你是 $name，一个被监督的Agent。
+
+当前日期：$current_date（第$day天）
+监控时段：$start_time 到 $end_time，每30分钟一个时间点
+你的个性：$innate
+你的背景：$learned
+你目前的状态：$currently
+
+你的健康状况：$health_status
+禁止的活动：$forbidden_activities
+
+【重要】自律程度：$self_discipline
+行为倾向：$behavior_tendency
+是否复发：$is_in_relapse
+
+【环境状态（一天开始时）】
+$environment_constraints
+
+【关键规则——自律程度决定违规意图数量】
+总共 $num_slots 个时间点，根据自律程度，违规意图的数量严格限制如下：
+- very_high自律：最多1个时间点有违规意图，其余全部是正常活动
+- high自律：最多2个时间点有违规意图，其余全部是正常活动
+- medium自律：约4-5个时间点有违规意图，其余是正常活动
+- low自律：约7-8个时间点有违规意图，其余是正常活动
+- very_low自律：约10个时间点有违规意图
+
+【正常活动示例（非违规）】
+看电视、听广播、听音乐、看书读报、散步、和家人聊天、回忆往事、
+整理房间、写日记、做简单运动、喝水、准备睡觉、洗漱、冥想放松
+
+【违规活动示例（与禁止事项相关）】
+偷吃零食/甜食、翻找冰箱、吃高糖食物、吃高脂肪食物、深夜进食、
+违反饮食限制、过量饮食
+
+请一次性生成整个监控时段（$num_slots个时间点）的所有意图。
+
+注意事项：
+1. 每个时间点生成一个意图
+2. 意图之间应该有连贯性（不要突然性格大变）
+3. 低自律者会反复尝试，即使被阻止也可能再次尝试
+4. 如果某个空间被锁定，后续时间点不能进入（除非解锁）
+5. 复发状态下，冲动会更强烈
+6. compliance_threshold: 0=完全正常活动, 1=轻微违规倾向, 2=中度违规, 3=严重违规
+
+请以JSON格式返回所有时间点的意图：
+{
+  "res": [
+    {
+      "time_slot": 0,
+      "time": "19:00",
+      "activity": "看电视节目",
+      "duration": 30,
+      "compliance_threshold": 0,
+      "inner_monologue": "今天的新闻挺有意思的"
+    },
+    {
+      "time_slot": 1,
+      "time": "19:30",
+      "activity": "活动描述",
+      "duration": 30,
+      "compliance_threshold": 2,
+      "inner_monologue": "内心独白"
+    }
+  ]
+}
+
+时间点列表：$time_slots

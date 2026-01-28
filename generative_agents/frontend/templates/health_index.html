@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>健康管理模拟 - 场景列表</title>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        h1 { color: #333; }
+        .scenario-list { display: flex; flex-wrap: wrap; gap: 20px; }
+        .scenario-card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            min-width: 250px;
+        }
+        .scenario-card h3 { margin-top: 0; color: #2196F3; }
+        .score { font-size: 24px; font-weight: bold; color: #4CAF50; }
+        a { color: #2196F3; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <h1>健康管理模拟系统</h1>
+    <div class="scenario-list">
+        {% for s in scenarios %}
+        <div class="scenario-card">
+            <h3>{{ s.name }}</h3>
+            <p>模拟天数: {{ s.days }}</p>
+            <p>平均健康分: <span class="score">{{ "%.1f"|format(s.avg_score) }}</span> / 10</p>
+            <p>
+                <a href="/scenario/{{ s.name }}">查看详情</a> |
+                <a href="/scenario/{{ s.name }}/timeline">时间线</a>
+            </p>
+        </div>
+        {% endfor %}
+    </div>
+    {% if not scenarios %}
+    <p>暂无模拟数据。请先运行模拟：</p>
+    <pre>python start_health_simulation.py --scenario weight-loss --days 7</pre>
+    {% endif %}
+</body>
+</html>

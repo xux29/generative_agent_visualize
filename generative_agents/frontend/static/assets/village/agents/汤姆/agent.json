@@ -13,6 +13,16 @@
     "lifestyle": "汤姆晚上11点左右上床睡觉，早上7点左右醒来，下午5点左右吃晚饭。",
     "daily_plan": "汤姆早上8点开放柳树市场和药店，站在杂货店柜台后面，下午6点回家和妻子一起吃晚饭。"
   },
+  "monitor": {
+    "role": "supervised",
+    "supervisor": "简",
+    "self_discipline": "low",
+    "health_status": {
+      "obesity": true,
+      "severity": "severe",
+      "forbidden_activities": ["吃零食", "吃夜宵", "偷吃甜食", "去厨房翻找食物"]
+    }
+  },
   "spatial": {
     "address": {
       "living_area": [

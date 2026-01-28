@@ -13,6 +13,16 @@
     "lifestyle": "克劳斯晚上11点左右睡觉，早上7点左右醒来，下午5点左右吃晚饭。",
     "daily_plan": "克劳斯一大早就去奥克山学院的图书馆，整日写作，在霍布斯咖啡馆吃饭。"
   },
+  "monitor": {
+    "role": "supervised",
+    "supervisor": "玛丽亚",
+    "self_discipline": "low",
+    "health_status": {
+      "diabetes": true,
+      "severity": "severe",
+      "forbidden_activities": ["夜间进食", "睡前吃甜食", "偷吃零食", "去厨房翻找食物"]
+    }
+  },
   "spatial": {
     "address": {
       "living_area": [

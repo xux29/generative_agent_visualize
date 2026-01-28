@@ -8,9 +8,10 @@ import datetime
 from modules import memory, prompt, utils
 from modules.model.llm_model import create_llm_model
 from modules.memory.associate import Concept
+from modules.agent_health import HealthAgentMixin
 
 
-class Agent:
+class Agent(HealthAgentMixin):
     def __init__(self, config, maze, conversation, logger):
         self.name = config["name"]
         self.maze = maze
@@ -60,6 +61,9 @@ class Agent:
         self.move(config["coord"], config.get("path"))
         if self.coord is None:
             self.coord = config["coord"]
+
+        # health management (if configured)
+        self._init_health_management(config.get("monitor", {}))
 
     def abstract(self):
         des = {

@@ -13,6 +13,16 @@
     "lifestyle": "亚当晚上8点左右上床睡觉，凌晨4点左右醒来，下午5点左右吃晚饭。",
     "daily_plan": ""
   },
+  "monitor": {
+    "role": "supervised",
+    "supervisor": "山姆",
+    "self_discipline": "low",
+    "health_status": {
+      "phone_addiction": true,
+      "severity": "severe",
+      "forbidden_activities": ["睡前玩手机", "夜间使用手机", "带手机上床"]
+    }
+  },
   "spatial": {
     "address": {
       "living_area": [

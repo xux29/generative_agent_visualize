@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ data.scenario }} - 时间线</title>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        h1 { color: #333; }
+        .timeline { max-width: 800px; margin: 0 auto; }
+        .day { background: white; margin: 20px 0; padding: 20px; border-radius: 8px; }
+        .day h3 { margin-top: 0; color: #2196F3; }
+        .event { padding: 10px; margin: 5px 0; border-left: 3px solid #ccc; }
+        .event.intention { border-color: #FF9800; }
+        .event.intervention { border-color: #4CAF50; }
+        .score { float: right; font-weight: bold; }
+        .score.high { color: #4CAF50; }
+        .score.mid { color: #FF9800; }
+        .score.low { color: #F44336; }
+        a { color: #2196F3; }
+    </style>
+</head>
+<body>
+    <h1>{{ data.scenario }} - 时间线视图</h1>
+    <p><a href="/scenario/{{ data.scenario }}">← 返回报告</a></p>
+
+    <div class="timeline">
+        {% for log in data.daily_logs %}
+        <div class="day">
+            <h3>Day {{ log.day }}
+                <span class="score {% if log.health_score >= 7 %}high{% elif log.health_score >= 4 %}mid{% else %}low{% endif %}">
+                    健康分: {{ log.health_score }}/10
+                </span>
+            </h3>
+
+            {% for event in log.events %}
+            <div class="event intention">
+                <strong>[{{ event.time }}]</strong> {{ event.agent }}: {{ event.content }}
+                {% if event.inner_monologue %}
+                <br><em>内心: {{ event.inner_monologue }}</em>
+                {% endif %}
+            </div>
+            {% endfor %}
+
+            {% for intervention in log.interventions %}
+            <div class="event intervention">
+                <strong>[{{ intervention.time }}]</strong>
+                干预 Level {{ intervention.level }}: {{ intervention.action }}
+                <br><em>原因: {{ intervention.reason }}</em>
+            </div>
+            {% endfor %}
+
+            {% if log.reflection %}
+            <div class="event">
+                <strong>每日反思:</strong> {{ log.reflection.today_summary }}
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</body>
+</html>

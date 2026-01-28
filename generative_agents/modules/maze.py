@@ -132,6 +132,9 @@ class Maze:
 
         self.logger = logger
 
+        # 健康管理扩展：锁定区域管理
+        self.locked_areas = {}  # {address_str: {"locked": bool, "locked_by": agent_name}}
+
     def find_path(self, src_coord, dst_coord):
         map = [[0 for _ in range(self.maze_width)] for _ in range(self.maze_height)]
         frontier, visited = [src_coord], set()
@@ -205,4 +208,141 @@ class Maze:
         addr = ":".join(address)
         if addr in self.address_tiles:
             return self.address_tiles[addr]
-        return random.choice(self.address_tiles.values())
+        return random.choice(list(self.address_tiles.values()))
+
+    # ===== 健康管理扩展：区域锁定功能 =====
+
+    def lock_area(self, address, locked_by="Manager"):
+        """
+        锁定一个区域（通过设置该区域所有 Tile 的 collision=True）
+
+        Args:
+            address: 地址列表或字符串，如 ["the Ville", "玫瑰酒吧", "酒吧", "厨房水槽"]
+            locked_by: 锁定者名称
+
+        Returns:
+            bool: 是否成功锁定
+        """
+        if isinstance(address, list):
+            addr_str = ":".join(address)
+        else:
+            addr_str = address
+
+        if addr_str not in self.address_tiles:
+            self.logger.warning(f"Cannot lock area '{addr_str}': address not found")
+            return False
+
+        # 记录锁定状态
+        self.locked_areas[addr_str] = {
+            "locked": True,
+            "locked_by": locked_by,
+            "original_collision_state": {}
+        }
+
+        # 设置该区域所有 Tile 为 collision
+        tiles = self.address_tiles[addr_str]
+        for coord in tiles:
+            tile = self.tile_at(coord)
+            # 保存原始碰撞状态
+            self.locked_areas[addr_str]["original_collision_state"][coord] = tile.collision
+            tile.collision = True
+
+        self.logger.info(f"{locked_by} locked area '{addr_str}' ({len(tiles)} tiles)")
+        return True
+
+    def unlock_area(self, address, unlocked_by="Manager"):
+        """
+        解锁一个区域
+
+        Args:
+            address: 地址列表或字符串
+            unlocked_by: 解锁者名称
+
+        Returns:
+            bool: 是否成功解锁
+        """
+        if isinstance(address, list):
+            addr_str = ":".join(address)
+        else:
+            addr_str = address
+
+        if addr_str not in self.locked_areas:
+            self.logger.warning(f"Cannot unlock area '{addr_str}': not locked")
+            return False
+
+        lock_info = self.locked_areas[addr_str]
+
+        # 恢复原始碰撞状态
+        tiles = self.address_tiles.get(addr_str, set())
+        for coord in tiles:
+            tile = self.tile_at(coord)
+            original_state = lock_info["original_collision_state"].get(coord, False)
+            tile.collision = original_state
+
+        # 移除锁定记录
+        del self.locked_areas[addr_str]
+
+        self.logger.info(f"{unlocked_by} unlocked area '{addr_str}' ({len(tiles)} tiles)")
+        return True
+
+    def is_area_locked(self, address):
+        """
+        检查区域是否被锁定
+
+        Args:
+            address: 地址列表或字符串
+
+        Returns:
+            bool: 是否被锁定
+        """
+        if isinstance(address, list):
+            addr_str = ":".join(address)
+        else:
+            addr_str = address
+
+        return addr_str in self.locked_areas and self.locked_areas[addr_str]["locked"]
+
+    def get_locked_areas(self):
+        """
+        获取所有被锁定的区域
+
+        Returns:
+            dict: 锁定区域信息
+        """
+        return {
+            addr: {
+                "locked_by": info["locked_by"],
+                "tile_count": len(self.address_tiles.get(addr, set()))
+            }
+            for addr, info in self.locked_areas.items()
+            if info["locked"]
+        }
+
+    def can_agent_access(self, coord, agent_name=None):
+        """
+        检查 Agent 是否能访问某个坐标
+
+        Args:
+            coord: 坐标
+            agent_name: Agent 名称（未来可扩展为特定 Agent 可以访问锁定区域）
+
+        Returns:
+            bool: 是否可访问
+        """
+        tile = self.tile_at(coord)
+
+        # 如果 Tile 本身就是碰撞的（非锁定导致），不可访问
+        if tile.collision:
+            # 检查是否是被锁定导致的
+            for addr_str, lock_info in self.locked_areas.items():
+                if coord in lock_info.get("original_collision_state", {}):
+                    # 这是被锁定的区域
+                    # 未来可以扩展：特定 Agent（如 Manager）可以访问
+                    if agent_name and agent_name == lock_info.get("locked_by"):
+                        return True
+                    return False
+
+            # 不是锁定导致的碰撞，不可访问
+            return False
+
+        return True

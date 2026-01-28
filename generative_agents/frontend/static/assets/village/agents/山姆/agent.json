@@ -13,6 +13,14 @@
     "lifestyle": "山姆晚上9点左右上床睡觉，早上5点左右醒来，下午5点左右吃晚饭。",
     "daily_plan": "山姆喜欢在约翰逊公园散步，或者坐在霍布斯咖啡馆看书。"
   },
+  "monitor": {
+    "role": "supervisor",
+    "supervised_agents": ["亚当"],
+    "strategy_preference": "adaptive",
+    "lockable_areas": [
+      "the Ville:亚当的家:主人房:壁橱"
+    ]
+  },
   "spatial": {
     "address": {
       "living_area": [

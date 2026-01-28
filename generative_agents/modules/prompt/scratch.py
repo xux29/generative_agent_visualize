@@ -820,3 +820,394 @@ class Scratch:
         failsafe = self.currently
 
         return Result(prompt, None, failsafe, retrieve_currentlyResponse)
+
+    # ===== Health Management Prompts =====
+
+    def prompt_health_generate_intention(self, health_status, forbidden_activities, retrieved_concepts, self_discipline, environment_constraints="无特殊限制", behavior_tendency="stable", is_in_relapse=False):
+        """Generate Target's behavioral intention"""
+        # 将复发状态转换为中文描述
+        relapse_str = "是（正处于复发期，冲动强烈）" if is_in_relapse else "否"
+
+        # 将行为倾向转换为中文描述
+        tendency_map = {
+            "improving": "improving（改善中）",
+            "stable": "stable（稳定）",
+            "declining": "declining（恶化中）",
+            "relapsing": "relapsing（复发中）",
+        }
+        tendency_str = tendency_map.get(behavior_tendency, behavior_tendency)
+
+        prompt = self.build_prompt(
+            "health_generate_intention",
+            {
+                "name": self.name,
+                "current_time": utils.get_timer().daily_format_cn(),
+                "innate": self.config["innate"],
+                "learned": self.config["learned"],
+                "currently": self.currently,
+                "health_status": health_status,
+                "forbidden_activities": ", ".join(forbidden_activities),
+                "retrieved_concepts": "\n".join([f"- {c}" for c in retrieved_concepts]),
+                "self_discipline": self_discipline,
+                "environment_constraints": environment_constraints,
+                "behavior_tendency": tendency_str,
+                "is_in_relapse": relapse_str,
+            }
+        )
+
+        class HealthIntentionRes(BaseModel):
+            activity: str
+            duration: int
+            compliance_threshold: int
+            inner_monologue: str
+
+        class HealthIntentionResponse(BaseModel):
+            res: HealthIntentionRes
+
+        failsafe = {
+            "activity": "休息",
+            "duration": 30,
+            "compliance_threshold": 1,
+            "inner_monologue": "我应该休息一下"
+        }
+
+        def _callback(response):
+            return {
+                "activity": response.activity,
+                "duration": response.duration,
+                "compliance_threshold": response.compliance_threshold,
+                "inner_monologue": response.inner_monologue
+            }
+
+        return Result(prompt, _callback, failsafe, HealthIntentionResponse)
+
+    def prompt_health_evaluate_strategy(self, target_name, relationship, target_health_status,
+                                       target_intention, compliance_threshold, inner_monologue,
+                                       target_today_log, strategy_preference):
+        """Evaluate Manager's intervention strategy"""
+        prompt = self.build_prompt(
+            "health_evaluate_strategy",
+            {
+                "name": self.name,
+                "current_time": utils.get_timer().daily_format_cn(),
+                "innate": self.config["innate"],
+                "strategy_preference": strategy_preference,
+                "target_name": target_name,
+                "relationship": relationship,
+                "target_health_status": target_health_status,
+                "target_intention": target_intention,
+                "compliance_threshold": compliance_threshold,
+                "inner_monologue": inner_monologue,
+                "target_today_log": target_today_log,
+            }
+        )
+
+        class HealthStrategyRes(BaseModel):
+            level: int
+            action: str
+            timing: str
+            reason: str
+
+        class HealthStrategyResponse(BaseModel):
+            res: HealthStrategyRes
+
+        failsafe = {
+            "level": 0,
+            "action": "observe",
+            "timing": "none",
+            "reason": "继续观察"
+        }
+
+        def _callback(response):
+            return {
+                "level": response.level,
+                "action": response.action,
+                "timing": response.timing,
+                "reason": response.reason
+            }
+
+        return Result(prompt, _callback, failsafe, HealthStrategyResponse)
+
+    def prompt_health_generate_persuasion(self, target_name, target_intention, strategy_reason,
+                                         relationship, target_personality):
+        """Generate persuasion text"""
+        prompt = self.build_prompt(
+            "health_generate_persuasion",
+            {
+                "name": self.name,
+                "target_name": target_name,
+                "target_intention": target_intention,
+                "strategy_reason": strategy_reason,
+                "relationship": relationship,
+                "your_personality": self.config["innate"],
+                "target_personality": target_personality,
+            }
+        )
+
+        class HealthPersuasionResponse(BaseModel):
+            res: str
+
+        failsafe = f"{target_name}，这样对你的健康不好。"
+
+        return Result(prompt, None, failsafe, HealthPersuasionResponse)
+
+    def prompt_health_react_persuasion(self, supervisor_name, your_intention, persuasion_text,
+                                      strategy_reason, self_discipline, inner_monologue):
+        """React to persuasion"""
+        prompt = self.build_prompt(
+            "health_react_persuasion",
+            {
+                "name": self.name,
+                "your_intention": your_intention,
+                "supervisor_name": supervisor_name,
+                "persuasion_text": persuasion_text,
+                "strategy_reason": strategy_reason,
+                "your_personality": self.config["innate"],
+                "self_discipline": self_discipline,
+                "inner_monologue": inner_monologue,
+            }
+        )
+
+        class HealthReactionRes(BaseModel):
+            accept: bool
+            response: str
+            inner_thought: str
+
+        class HealthReactionResponse(BaseModel):
+            res: HealthReactionRes
+
+        failsafe = {
+            "accept": False,
+            "response": "我知道了",
+            "inner_thought": "我还是想做"
+        }
+
+        def _callback(response):
+            return {
+                "accept": response.accept,
+                "response": response.response,
+                "inner_thought": response.inner_thought
+            }
+
+        return Result(prompt, _callback, failsafe, HealthReactionResponse)
+
+    def prompt_health_daily_reflection(self, day, target_name, monitoring_hours, day_log,
+                                      intervention_log, health_score, score_breakdown):
+        """Daily reflection for Manager"""
+        prompt = self.build_prompt(
+            "health_daily_reflection",
+            {
+                "name": self.name,
+                "target_name": target_name,
+                "day": day,
+                "monitoring_hours": monitoring_hours,
+                "day_log": day_log,
+                "intervention_log": intervention_log,
+                "health_score": health_score,
+                "score_breakdown": score_breakdown,
+            }
+        )
+
+        class HealthReflectionRes(BaseModel):
+            today_summary: str
+            strategy_effectiveness: str
+            risk_patterns: List[str]
+            tomorrow_focus: str
+            strategy_adjustment: str
+
+        class HealthReflectionResponse(BaseModel):
+            res: HealthReflectionRes
+
+        failsafe = {
+            "today_summary": "今天的监督工作已完成",
+            "strategy_effectiveness": "策略基本有效",
+            "risk_patterns": [],
+            "tomorrow_focus": "继续观察",
+            "strategy_adjustment": "保持当前策略"
+        }
+
+        def _callback(response):
+            return {
+                "today_summary": response.today_summary,
+                "strategy_effectiveness": response.strategy_effectiveness,
+                "risk_patterns": response.risk_patterns,
+                "tomorrow_focus": response.tomorrow_focus,
+                "strategy_adjustment": response.strategy_adjustment
+            }
+
+        return Result(prompt, _callback, failsafe, HealthReflectionResponse)
+
+    # ============================================================================
+    # Batch Processing Prompts for Performance Optimization
+    # ============================================================================
+
+    def prompt_health_generate_intention_batch(self, day, num_slots, time_slots,
+                                                health_status, forbidden_activities,
+                                                self_discipline, environment_constraints,
+                                                behavior_tendency, is_in_relapse):
+        """
+        批量生成一整天所有时间点的意图（性能优化）
+
+        Args:
+            day: 当前天数
+            num_slots: 时间点数量
+            time_slots: 时间点列表，如 ["21:00", "21:30", ...]
+            health_status: 健康状态
+            forbidden_activities: 禁止活动
+            self_discipline: 自律程度
+            environment_constraints: 环境约束
+            behavior_tendency: 行为倾向
+            is_in_relapse: 是否复发
+        """
+        relapse_str = "是（正处于复发期，冲动强烈）" if is_in_relapse else "否"
+        tendency_map = {
+            "improving": "improving（改善中）",
+            "stable": "stable（稳定）",
+            "declining": "declining（恶化中）",
+            "relapsing": "relapsing（复发中）",
+        }
+        tendency_str = tendency_map.get(behavior_tendency, behavior_tendency)
+
+        # 构建时间点字符串
+        time_slots_str = ", ".join(time_slots)
+
+        prompt = self.build_prompt(
+            "health_generate_intention_batch",
+            {
+                "name": self.name,
+                "current_date": utils.get_timer().get_date().strftime("%Y-%m-%d"),
+                "day": day,
+                "start_time": time_slots[0] if time_slots else "21:00",
+                "end_time": time_slots[-1] if time_slots else "02:00",
+                "num_slots": num_slots,
+                "innate": self.config["innate"],
+                "learned": self.config["learned"],
+                "currently": self.currently,
+                "health_status": health_status,
+                "forbidden_activities": ", ".join(forbidden_activities),
+                "self_discipline": self_discipline,
+                "environment_constraints": environment_constraints,
+                "behavior_tendency": tendency_str,
+                "is_in_relapse": relapse_str,
+                "time_slots": time_slots_str,
+            }
+        )
+
+        class IntentionItem(BaseModel):
+            time_slot: int
+            time: str
+            activity: str
+            duration: int
+            compliance_threshold: int
+            inner_monologue: str
+
+        class BatchIntentionResponse(BaseModel):
+            res: List[IntentionItem]
+
+        # 生成默认的failsafe
+        failsafe = [
+            {
+                "time_slot": i,
+                "time": time_slots[i] if i < len(time_slots) else f"{21 + i//2}:{(i%2)*30:02d}",
+                "activity": "休息",
+                "duration": 30,
+                "compliance_threshold": 1,
+                "inner_monologue": "我应该休息"
+            }
+            for i in range(num_slots)
+        ]
+
+        def _callback(response):
+            return [
+                {
+                    "time_slot": item.time_slot,
+                    "time": item.time,
+                    "activity": item.activity,
+                    "duration": item.duration,
+                    "compliance_threshold": item.compliance_threshold,
+                    "inner_monologue": item.inner_monologue
+                }
+                for item in response
+            ]
+
+        return Result(prompt, _callback, failsafe, BatchIntentionResponse)
+
+    def prompt_health_evaluate_strategy_batch(self, day, target_name, target_profile,
+                                               forbidden_activities, intentions_list,
+                                               supervision_style, relationship,
+                                               escalation_threshold,
+                                               self_discipline="medium",
+                                               health_score=75.0):
+        """
+        批量评估一整天所有意图的干预策略（性能优化）
+
+        Args:
+            day: 当前天数
+            target_name: 被监督者名称
+            target_profile: 被监督者档案
+            forbidden_activities: 禁止活动
+            intentions_list: 所有意图列表
+            supervision_style: 监督风格
+            relationship: 关系
+            escalation_threshold: 升级阈值
+            self_discipline: 被监督者自律程度
+            health_score: 当前健康分
+        """
+        # 构建意图列表字符串
+        intentions_str = "\n".join([
+            f"- [{item['time']}] 意图: {item['activity']} (遵守难度: {item['compliance_threshold']}, 内心独白: {item['inner_monologue']})"
+            for item in intentions_list
+        ])
+
+        prompt = self.build_prompt(
+            "health_evaluate_strategy_batch",
+            {
+                "name": self.name,
+                "day": day,
+                "target_name": target_name,
+                "target_profile": target_profile,
+                "forbidden_activities": ", ".join(forbidden_activities),
+                "intentions_list": intentions_str,
+                "supervision_style": supervision_style,
+                "relationship": relationship,
+                "escalation_threshold": escalation_threshold,
+                "self_discipline": self_discipline,
+                "health_score": f"{health_score:.1f}",
+            }
+        )
+
+        class StrategyItem(BaseModel):
+            time_slot: int
+            time: str
+            level: int
+            action: str
+            reason: str
+
+        class BatchStrategyResponse(BaseModel):
+            res: List[StrategyItem]
+
+        # 生成默认的failsafe
+        failsafe = [
+            {
+                "time_slot": i,
+                "time": item.get("time", f"{21 + i//2}:{(i%2)*30:02d}"),
+                "level": 0,
+                "action": "观察",
+                "reason": "行为正常，无需干预"
+            }
+            for i, item in enumerate(intentions_list)
+        ]
+
+        def _callback(response):
+            return [
+                {
+                    "time_slot": item.time_slot,
+                    "time": item.time,
+                    "level": item.level,
+                    "action": item.action,
+                    "reason": item.reason
+                }
+                for item in response
+            ]
+
+        return Result(prompt, _callback, failsafe, BatchStrategyResponse)

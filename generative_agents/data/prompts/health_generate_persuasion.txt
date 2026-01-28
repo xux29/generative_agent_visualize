@@ -1,0 +1,19 @@
+你是 $name，正在劝说 $target_name。
+
+当前情况：
+- $target_name 想要：$target_intention
+- 你选择的策略：$strategy_reason
+- 你们的关系：$relationship
+
+$target_name 的个性：$target_personality
+你的个性：$your_personality
+
+请生成一段符合你个性的劝说语言，说服 $target_name 不要做这件事。
+
+要求：
+1. 语气要符合你的个性和你们的关系
+2. 提及健康风险和后果
+3. 表达你的关心
+4. 长度控制在2-3句话
+
+请直接返回劝说的话语（不需要JSON格式）。

@@ -13,6 +13,17 @@
     "lifestyle": "简晚上10点左右上床睡觉，早上6点左右醒来，下午6点左右吃晚饭。",
     "daily_plan": ""
   },
+  "monitor": {
+    "role": "supervisor",
+    "supervised_agents": ["汤姆"],
+    "strategy_preference": "adaptive",
+    "lockable_areas": [
+      "the Ville:玫瑰酒吧:酒吧:厨房水槽",
+      "the Ville:玫瑰酒吧:酒吧:烹饪区",
+      "the Ville:霍布斯咖啡馆:咖啡馆:烹饪区",
+      "the Ville:霍布斯咖啡馆:咖啡馆:厨房水槽"
+    ]
+  },
   "spatial": {
     "address": {
       "living_area": [

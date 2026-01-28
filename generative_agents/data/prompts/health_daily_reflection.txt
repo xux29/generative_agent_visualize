@@ -1,0 +1,40 @@
+你是 $name，$target_name 的监督者。
+
+今天是第 $day 天，监督时段已结束（$monitoring_hours）。
+
+今日 $target_name 的完整行为记录：
+$day_log
+
+今日干预策略记录：
+$intervention_log
+
+今日健康评分：$health_score / 10 分
+评分依据：$score_breakdown
+
+请进行每日反思：
+
+1. 评估今日表现：
+   - $target_name 的遵守情况如何？
+   - 哪些时段表现好？哪些时段违规？
+   - 违规行为的模式是什么？
+
+2. 评估干预策略：
+   - 今日使用的策略是否有效？
+   - 是否需要调整策略？
+   - 什么情况下升级/降级干预？
+
+3. 明日计划：
+   - 明天应该重点关注什么？
+   - 是否需要改变策略偏好？
+   - 预测明天的风险时段
+
+请以JSON格式返回你的反思：
+{
+  "res": {
+    "today_summary": "今日总结（2-3句话）",
+    "strategy_effectiveness": "策略效果评估",
+    "risk_patterns": ["识别的风险模式1", "风险模式2"],
+    "tomorrow_focus": "明日重点关注事项",
+    "strategy_adjustment": "策略调整建议"
+  }
+}

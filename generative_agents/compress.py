@@ -1,10 +1,14 @@
 import os
+import sys
 import json
 import argparse
 from datetime import datetime
 
 from modules.maze import Maze
-from start import personas
+
+# personas list for fallback (village has 25 agents)
+# For health simulations, we get agent list from checkpoint files
+personas = []
 
 file_markdown = "simulation.md"
 file_movement = "movement.json"
@@ -23,6 +27,20 @@ def get_stride(json_files):
     return config["stride"]
 
 
+# 从存档文件中读取maze路径
+def get_maze_path(json_files):
+    if len(json_files) < 1:
+        return "village/maze.json"
+
+    with open(json_files[0], "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    # 从checkpoint获取maze路径
+    if "maze" in config and "path" in config["maze"]:
+        return config["maze"]["path"]
+    return "village/maze.json"
+
+
 # 将address转换为字符串
 def get_location(address):
     # 仅为兼容原版
@@ -36,12 +54,12 @@ def get_location(address):
 
 
 # 插入第0帧数据（Agent的初始状态）
-def insert_frame0(init_pos, movement, agent_name):
+def insert_frame0(init_pos, movement, agent_name, map_folder="village"):
     key = "0"
     if key not in movement.keys():
         movement[key] = dict()
 
-    json_path = f"frontend/static/assets/village/agents/{agent_name}/agent.json"
+    json_path = f"frontend/static/assets/{map_folder}/agents/{agent_name}/agent.json"
     with open(json_path, "r", encoding="utf-8") as f:
         json_data = json.load(f)
         address = json_data["spatial"]["address"]["living_area"]
@@ -83,18 +101,23 @@ def generate_movement(checkpoints_folder, compressed_folder, compressed_file):
     stride = get_stride(json_files)
     sec_per_step = stride
 
+    # 获取maze路径（支持不同地图）
+    maze_rel_path = get_maze_path(json_files)  # e.g., "homeWithRobot/maze.json"
+    map_folder = maze_rel_path.split("/")[0] if "/" in maze_rel_path else "village"
+
     result = {
         "start_datetime": "",  # 起始时间
         "stride": stride,  # 每个step对应的分钟数（必须与生成时的参数一致）
         "sec_per_step": sec_per_step,  # 回放时每一帧对应的秒数
         "persona_init_pos": persona_init_pos,  # 每个Agent的初始位置
         "all_movement": all_movement,  # 所有Agent在每个setp中的位置变化
+        "map_folder": map_folder,  # 地图文件夹
     }
 
     last_location = dict()
 
     # 加载地图数据，用于计算Agent移动路径
-    json_path = "frontend/static/assets/village/maze.json"
+    json_path = f"frontend/static/assets/{maze_rel_path}"
     with open(json_path, "r", encoding="utf-8") as f:
         json_data = json.load(f)
         maze = Maze(json_data, None)
@@ -115,7 +138,7 @@ def generate_movement(checkpoints_folder, compressed_folder, compressed_file):
             for agent_name, agent_data in agents.items():
                 # 插入第0帧
                 if step == 1:
-                    insert_frame0(persona_init_pos, all_movement, agent_name)
+                    insert_frame0(persona_init_pos, all_movement, agent_name, map_folder)
 
                 source_coord = last_location.get(agent_name, all_movement["0"][agent_name])["movement"]
                 target_coord = agent_data["coord"]
@@ -200,10 +223,30 @@ def generate_report(checkpoints_folder, compressed_folder, compressed_file):
         with open(os.path.join(checkpoints_folder, conversation_file), "r", encoding="utf-8") as f:
             conversation = json.load(f)
 
+    # 从checkpoint获取agents列表和地图路径
+    files = sorted(os.listdir(checkpoints_folder))
+    json_files = [os.path.join(checkpoints_folder, f) for f in files
+                  if f.endswith(".json") and f != conversation_file]
+
+    # 获取地图路径和agent列表
+    checkpoint_agents = []
+    map_folder = "village"
+    if json_files:
+        with open(json_files[0], "r", encoding="utf-8") as f:
+            first_checkpoint = json.load(f)
+            checkpoint_agents = list(first_checkpoint.get("agents", {}).keys())
+            if "maze" in first_checkpoint and "path" in first_checkpoint["maze"]:
+                maze_path = first_checkpoint["maze"]["path"]
+                map_folder = maze_path.split("/")[0] if "/" in maze_path else "village"
+
     def extract_description():
         markdown_content = "# 基础人设\n\n"
-        for agent_name in personas:
-            json_path = f"frontend/static/assets/village/agents/{agent_name}/agent.json"
+        # 优先使用checkpoint中的agents，否则使用personas
+        agent_list = checkpoint_agents if checkpoint_agents else personas
+        for agent_name in agent_list:
+            json_path = f"frontend/static/assets/{map_folder}/agents/{agent_name}/agent.json"
+            if not os.path.exists(json_path):
+                continue
             with open(json_path, "r", encoding="utf-8") as f:
                 json_data = json.load(f)
                 markdown_content += f"## {agent_name}\n\n"
@@ -272,6 +315,7 @@ def generate_report(checkpoints_folder, compressed_folder, compressed_file):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--name", type=str, default="", help="the name of the simulation")
+parser.add_argument("--health", action="store_true", help="use health simulation path structure")
 args = parser.parse_args()
 
 
@@ -280,11 +324,23 @@ if __name__ == "__main__":
     if len(name) < 1:
         name = input("Please enter a simulation name: ")
 
-    while not os.path.exists(f"results/checkpoints/{name}"):
-        name = input(f"'{name}' doesn't exists, please re-enter the simulation name: ")
+    # Support both standard and health simulation paths
+    if args.health:
+        checkpoints_folder = f"results/health/{name}/checkpoints"
+        compressed_folder = f"results/compressed/health-{name}"
+    else:
+        checkpoints_folder = f"results/checkpoints/{name}"
+        compressed_folder = f"results/compressed/{name}"
 
-    checkpoints_folder = f"results/checkpoints/{name}"
-    compressed_folder = f"results/compressed/{name}"
+    while not os.path.exists(checkpoints_folder):
+        name = input(f"'{checkpoints_folder}' doesn't exist, please re-enter the simulation name: ")
+        if args.health:
+            checkpoints_folder = f"results/health/{name}/checkpoints"
+            compressed_folder = f"results/compressed/health-{name}"
+        else:
+            checkpoints_folder = f"results/checkpoints/{name}"
+            compressed_folder = f"results/compressed/{name}"
+
     os.makedirs(compressed_folder, exist_ok=True)
 
     generate_report(checkpoints_folder, compressed_folder, file_markdown)
