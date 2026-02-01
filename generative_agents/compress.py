@@ -313,13 +313,12 @@ def generate_report(checkpoints_folder, compressed_folder, compressed_file):
         compressed_file.write(all_markdown_content)
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--name", type=str, default="", help="the name of the simulation")
-parser.add_argument("--health", action="store_true", help="use health simulation path structure")
-args = parser.parse_args()
-
-
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--name", type=str, default="", help="the name of the simulation")
+    parser.add_argument("--health", action="store_true", help="use health simulation path structure")
+    args = parser.parse_args()
+
     name = args.name
     if len(name) < 1:
         name = input("Please enter a simulation name: ")

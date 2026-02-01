@@ -1,0 +1,824 @@
+<script type="text/javascript">
+    // Initialize variables from Flask context
+    let step = {{ step|tojson }};
+    let step_size = {{ sec_per_step|tojson }} * 1000; // Convert to milliseconds
+    let zoom = {{ zoom|tojson }};
+    if (zoom <= 0) zoom = document.documentElement.clientWidth / 4400;
+
+    let tile_width = 32;
+    let movement_speed = {{ play_speed|tojson }};
+    let execute_count_max = tile_width / movement_speed;
+    let execute_count = execute_count_max;
+    let all_movement = {{ all_movement|tojson }};
+    const conversation_data = all_movement["conversation"] || {};
+    const description_data = all_movement["description"] || {};
+
+    let datetime_options = { weekday: "long", year: "numeric", month: "long", day: "numeric" };
+    let start_datetime = new Date(Date.parse({{ start_datetime|tojson }}));
+
+    // Map folder for dynamic asset loading
+    let map_folder = {{ map_folder|default('village')|tojson }};
+
+    // Persona related variables
+    let persona_names = {{ persona_init_pos|tojson }};
+    var spawn_tile_loc = {};
+    for (var key in persona_names) {
+        spawn_tile_loc[key] = persona_names[key];
+    }
+
+    var personas = {};
+    var pronunciatios = {};
+    let anims_direction;
+    let pre_anims_direction;
+    let pre_anims_direction_dict = {};
+
+    let movement_target = {};
+
+    let finished = false;
+    let paused = false;
+    let camera;
+    let cameraControls;
+
+    // Camera drag state
+    let isDragging = false;
+
+    // Zoom limits
+    const MIN_ZOOM = 0.1;
+    const MAX_ZOOM = 3.0;
+    const ZOOM_STEP = 0.15;
+    const PAN_STEP = 100;  // Pixels to pan per button click
+
+    // Health-specific: intervention level names
+    const INTERVENTION_LEVELS = {
+        0: { name: "观察", icon: "👁️" },
+        1: { name: "劝说", icon: "💬" },
+        2: { name: "移除物品", icon: "📦" },
+        3: { name: "锁定空间", icon: "🔒" }
+    };
+
+    // Health zone translations
+    const ZONE_TRANSLATIONS = {
+        "SAFE": "安全",
+        "NORMAL": "正常",
+        "WARNING": "警告",
+        "DANGER": "危险",
+        "EMERGENCY": "紧急"
+    };
+
+    // Tide phase translations
+    const TIDE_TRANSLATIONS = {
+        "recovery": { text: "恢复期", icon: "🌅" },
+        "plateau": { text: "平台期", icon: "🏔️" },
+        "relapse": { text: "复发期", icon: "🌧️" },
+        "normal": { text: "正常期", icon: "🌊" },
+        "deep_recovery": { text: "深度恢复期", icon: "☀️" }
+    };
+
+    // Update health panel function
+    function updateHealthPanel(stepKey) {
+        // Find target agent data (first agent in step)
+        if (!all_movement[stepKey]) return;
+
+        let targetData = null;
+        let targetName = null;
+
+        for (let agentName in all_movement[stepKey]) {
+            if (agentName !== "description" && agentName !== "conversation") {
+                targetData = all_movement[stepKey][agentName];
+                targetName = agentName;
+                break;
+            }
+        }
+
+        if (!targetData) return;
+
+        // Update day
+        let day = targetData.day || 1;
+        document.getElementById("current-day").innerText = day;
+
+        // Update health score
+        let healthScore = targetData.health_score;
+        if (healthScore !== undefined && healthScore !== null) {
+            document.getElementById("health-score").innerText = healthScore.toFixed(1);
+        }
+
+        // Update health zone
+        let zone = targetData.health_zone || "NORMAL";
+        let zoneEl = document.getElementById("health-zone");
+        zoneEl.innerText = ZONE_TRANSLATIONS[zone] || zone;
+        zoneEl.className = "zone-badge zone-" + zone.toLowerCase();
+
+        // Update tide phase
+        let tidePhase = targetData.tide_phase || "normal";
+        let tideInfo = TIDE_TRANSLATIONS[tidePhase] || { text: tidePhase, icon: "🌊" };
+        document.getElementById("tide-phase").innerText = tideInfo.text;
+        document.getElementById("tide-icon").innerText = tideInfo.icon;
+
+        // Update intervention level
+        let level = targetData.intervention_level || 0;
+        let levelInfo = INTERVENTION_LEVELS[level] || INTERVENTION_LEVELS[0];
+
+        let levelIndicator = document.getElementById("level-indicator");
+        levelIndicator.innerText = level;
+        levelIndicator.className = "level-indicator level-" + level;
+
+        document.getElementById("level-name").innerText = levelInfo.name;
+
+        let levelAction = targetData.intervention_action || "-";
+        document.getElementById("level-action").innerText = levelAction;
+
+        // Update sidebar agent activities
+        for (let agentName in all_movement[stepKey]) {
+            if (agentName === "description" || agentName === "conversation") continue;
+
+            let agentData = all_movement[stepKey][agentName];
+            let activityEl = document.getElementById("sidebar-activity-" + agentName);
+            if (activityEl && agentData.action) {
+                let action = agentData.action;
+                // Truncate if too long
+                if (action.length > 30) {
+                    action = action.substring(0, 27) + "...";
+                }
+                activityEl.innerText = action;
+            }
+        }
+    }
+
+    // Phaser configuration
+    const baseWidth = Math.floor(document.documentElement.clientWidth * 0.75);
+    const baseHeight = Math.floor(document.documentElement.clientHeight);
+    const config = {
+        type: Phaser.AUTO,
+        width: baseWidth,
+        height: baseHeight,
+        parent: "game-container",
+        pixelArt: true,
+        physics: {
+            default: "arcade",
+            arcade: {
+                gravity: { y: 0 }
+            }
+        },
+        scene: {
+            preload: preload,
+            create: create,
+            update: update
+        },
+        scale: {
+            mode: Phaser.Scale.FIT,
+            autoCenter: Phaser.Scale.CENTER_BOTH
+        }
+    };
+
+    // Create Phaser game instance
+    const game = new Phaser.Game(config);
+    let cursors;
+
+    // Preload function
+    function preload() {
+        this.load.crossOrigin = "";
+
+        // Base path for assets
+        let asset_base = "static/assets/" + map_folder + "/tilemap/";
+
+        // Load images based on map folder
+        this.load.image("blocks_1", asset_base + "blocks_1.png");
+
+        if (map_folder === "homeWithRobot") {
+            // homeWithRobot uses a single main image tileset
+            this.load.image("home_main", asset_base + "Generated Image January 12, 2026 - 3_09PM.jpeg");
+        } else {
+            // Village uses multiple tilesets
+            this.load.image("walls", asset_base + "Room_Builder_32x32.png");
+            this.load.image("interiors_pt1", asset_base + "interiors_pt1.png");
+            this.load.image("interiors_pt2", asset_base + "interiors_pt2.png");
+            this.load.image("interiors_pt3", asset_base + "interiors_pt3.png");
+            this.load.image("interiors_pt4", asset_base + "interiors_pt4.png");
+            this.load.image("interiors_pt5", asset_base + "interiors_pt5.png");
+            this.load.image("CuteRPG_Field_B", asset_base + "CuteRPG_Field_B.png");
+            this.load.image("CuteRPG_Field_C", asset_base + "CuteRPG_Field_C.png");
+            this.load.image("CuteRPG_Harbor_C", asset_base + "CuteRPG_Harbor_C.png");
+            this.load.image("CuteRPG_Village_B", asset_base + "CuteRPG_Village_B.png");
+            this.load.image("CuteRPG_Forest_B", asset_base + "CuteRPG_Forest_B.png");
+            this.load.image("CuteRPG_Desert_C", asset_base + "CuteRPG_Desert_C.png");
+            this.load.image("CuteRPG_Mountains_B", asset_base + "CuteRPG_Mountains_B.png");
+            this.load.image("CuteRPG_Desert_B", asset_base + "CuteRPG_Desert_B.png");
+            this.load.image("CuteRPG_Forest_C", asset_base + "CuteRPG_Forest_C.png");
+        }
+
+        // Load tilemap JSON
+        this.load.tilemapTiledJSON("map", asset_base + "tilemap.json");
+
+        // Load persona atlases
+        let agent_base = "static/assets/" + map_folder + "/agents/";
+        const atlas_json = agent_base + "sprite.json";
+
+        for (var p in persona_names) {
+            image_static = agent_base + p + "/texture.png";
+            this.load.atlas(p, image_static, atlas_json);
+        }
+    }
+
+    // Create function
+    function create() {
+        const map = this.make.tilemap({ key: "map" });
+
+        // Add tilesets and create layers based on map folder
+        const collisions = map.addTilesetImage("blocks_1", "blocks_1");
+
+        if (map_folder === "homeWithRobot") {
+            // homeWithRobot map setup
+            const home_main = map.addTilesetImage("Generated Image January 12, 2026 - 3_09PM", "home_main");
+            let tileset_group = [home_main, collisions];
+
+            // Create layers for homeWithRobot (Chinese layer names)
+            const homeLayer = map.createLayer("1家", tileset_group, 0, 0);
+            const parentBedroomLayer = map.createLayer("2爸爸妈妈的卧室", tileset_group, 0, 0);
+            const childBedroomLayer = map.createLayer("2子女的卧室", tileset_group, 0, 0);
+            const kitchenLayer = map.createLayer("2厨房", tileset_group, 0, 0);
+            const bathroomLayer = map.createLayer("2卫生间", tileset_group, 0, 0);
+            const livingRoomLayer = map.createLayer("2客厅", tileset_group, 0, 0);
+            // Object layers
+            const bedLayer1 = map.createLayer("3床", tileset_group, 0, 0);
+            const laptopLayer = map.createLayer("3笔记本电脑", tileset_group, 0, 0);
+            const fridgeLayer = map.createLayer("3冰箱", tileset_group, 0, 0);
+            const toiletLayer = map.createLayer("3马桶", tileset_group, 0, 0);
+            const sofaLayer = map.createLayer("3沙发", tileset_group, 0, 0);
+
+            const collisionsLayer = map.createLayer("collisions", collisions, 0, 0);
+            if (collisionsLayer) {
+                collisionsLayer.setCollisionByProperty({ collide: true });
+                collisionsLayer.setDepth(-1);
+                collisionsLayer.setVisible(false);
+            }
+        } else {
+            // Village map setup (original code)
+            const walls = map.addTilesetImage("Room_Builder_32x32", "walls");
+            const interiors_pt1 = map.addTilesetImage("interiors_pt1", "interiors_pt1");
+            const interiors_pt2 = map.addTilesetImage("interiors_pt2", "interiors_pt2");
+            const interiors_pt3 = map.addTilesetImage("interiors_pt3", "interiors_pt3");
+            const interiors_pt4 = map.addTilesetImage("interiors_pt4", "interiors_pt4");
+            const interiors_pt5 = map.addTilesetImage("interiors_pt5", "interiors_pt5");
+            const CuteRPG_Field_B = map.addTilesetImage("CuteRPG_Field_B", "CuteRPG_Field_B");
+            const CuteRPG_Field_C = map.addTilesetImage("CuteRPG_Field_C", "CuteRPG_Field_C");
+            const CuteRPG_Harbor_C = map.addTilesetImage("CuteRPG_Harbor_C", "CuteRPG_Harbor_C");
+            const CuteRPG_Village_B = map.addTilesetImage("CuteRPG_Village_B", "CuteRPG_Village_B");
+            const CuteRPG_Forest_B = map.addTilesetImage("CuteRPG_Forest_B", "CuteRPG_Forest_B");
+            const CuteRPG_Desert_C = map.addTilesetImage("CuteRPG_Desert_C", "CuteRPG_Desert_C");
+            const CuteRPG_Mountains_B = map.addTilesetImage("CuteRPG_Mountains_B", "CuteRPG_Mountains_B");
+            const CuteRPG_Desert_B = map.addTilesetImage("CuteRPG_Desert_B", "CuteRPG_Desert_B");
+            const CuteRPG_Forest_C = map.addTilesetImage("CuteRPG_Forest_C", "CuteRPG_Forest_C");
+
+            let tileset_group_1 = [CuteRPG_Field_B, CuteRPG_Field_C, CuteRPG_Harbor_C, CuteRPG_Village_B,
+                CuteRPG_Forest_B, CuteRPG_Desert_C, CuteRPG_Mountains_B, CuteRPG_Desert_B, CuteRPG_Forest_C,
+                interiors_pt1, interiors_pt2, interiors_pt3, interiors_pt4, interiors_pt5, walls];
+            const bottomGroundLayer = map.createLayer("Bottom Ground", tileset_group_1, 0, 0);
+            const exteriorGroundLayer = map.createLayer("Exterior Ground", tileset_group_1, 0, 0);
+            const exteriorDecorationL1Layer = map.createLayer("Exterior Decoration L1", tileset_group_1, 0, 0);
+            const exteriorDecorationL2Layer = map.createLayer("Exterior Decoration L2", tileset_group_1, 0, 0);
+            const interiorGroundLayer = map.createLayer("Interior Ground", tileset_group_1, 0, 0);
+            const wallLayer = map.createLayer("Wall", [CuteRPG_Field_C, walls], 0, 0);
+            const interiorFurnitureL1Layer = map.createLayer("Interior Furniture L1", tileset_group_1, 0, 0);
+            const interiorFurnitureL2Layer = map.createLayer("Interior Furniture L2 ", tileset_group_1, 0, 0);
+            const foregroundL1Layer = map.createLayer("Foreground L1", tileset_group_1, 0, 0);
+            const foregroundL2Layer = map.createLayer("Foreground L2", tileset_group_1, 0, 0);
+
+            const collisionsLayer = map.createLayer("Collisions", collisions, 0, 0);
+
+            if (collisionsLayer) {
+                collisionsLayer.setCollisionByProperty({ collide: true });
+                collisionsLayer.setDepth(-1);
+            }
+            if (foregroundL1Layer) foregroundL1Layer.setDepth(2);
+            if (foregroundL2Layer) foregroundL2Layer.setDepth(2);
+        }
+
+        const canvas = this.game.canvas;
+        canvas.setAttribute("tabindex", "0");
+        canvas.addEventListener("pointerdown", () => canvas.focus());
+        this.input.mouse.disableContextMenu();
+
+        function add_text(game, x, y, text, background) {
+            res = game.add.text(
+                x,
+                y,
+                text,
+                {
+                    font: "24px 黑体",
+                    fontWeight: "normal",
+                    fill: "#000000",
+                    backgroundColor: background,
+                    padding: { x: 20, y: 4},
+                    align: "left",
+                    wordWrap: { width: 1000/zoom, useAdvancedWrap: true },
+                }
+            );
+
+            res.setDepth(10);
+            res.alpha = 0.8;
+            res.setScrollFactor(0);
+
+            return res;
+        }
+
+        posX = 20;
+        posY = 20;
+
+        // Add button: play, pause ...
+        buttonPlay = add_text(this, posX, posY, "[运行]", "#ffffcc");
+        buttonPlay.setInteractive();
+        posX += buttonPlay.width + 10;
+
+        buttonPause = add_text(this, posX, posY, " 暂停 ", "#ffffcc");
+        buttonPause.setInteractive();
+        posX += buttonPause.width + 10;
+
+        buttonShowConversation = add_text(this, posX, posY, "[显示对话]", "#ffffcc");
+        buttonShowConversation.setInteractive();
+        posX += buttonShowConversation.width + 10;
+
+        buttonHideConversation = add_text(this, posX, posY, " 隐藏对话 ", "#ffffcc");
+        buttonHideConversation.setInteractive();
+        posX += buttonHideConversation.width + 10;
+
+        // Show current time
+        currentTime = add_text(this, posX, posY, "", "#ccffcc");
+
+        // Show conversation content
+        textConversation = add_text(this, 20, posY + currentTime.height + 10, " —— ", "#ccffcc");
+
+        // ===== Zoom & Pan Control Buttons =====
+        // Create control panel at bottom-left corner
+        const controlPanelY = config.height - 180;
+        const controlPanelX = 20;
+
+        // Zoom controls
+        const zoomLabel = add_text(this, controlPanelX, controlPanelY, "🔍 缩放", "#e0e0e0");
+
+        buttonZoomIn = add_text(this, controlPanelX, controlPanelY + 35, " ＋ ", "#ffffcc");
+        buttonZoomIn.setInteractive({ useHandCursor: true });
+
+        buttonZoomOut = add_text(this, controlPanelX + buttonZoomIn.width + 10, controlPanelY + 35, " － ", "#ffffcc");
+        buttonZoomOut.setInteractive({ useHandCursor: true });
+
+        buttonZoomReset = add_text(this, controlPanelX + buttonZoomIn.width + buttonZoomOut.width + 20, controlPanelY + 35, "重置", "#ffffcc");
+        buttonZoomReset.setInteractive({ useHandCursor: true });
+
+        buttonZoomFit = add_text(this, controlPanelX + buttonZoomIn.width + buttonZoomOut.width + buttonZoomReset.width + 30, controlPanelY + 35, "适应", "#ffffcc");
+        buttonZoomFit.setInteractive({ useHandCursor: true });
+
+        // Pan controls (arrow buttons in cross pattern)
+        const panLabel = add_text(this, controlPanelX, controlPanelY + 75, "🧭 平移", "#e0e0e0");
+
+        const arrowBaseX = controlPanelX + 60;
+        const arrowBaseY = controlPanelY + 110;
+
+        buttonPanUp = add_text(this, arrowBaseX, arrowBaseY, " ▲ ", "#ccccff");
+        buttonPanUp.setInteractive({ useHandCursor: true });
+
+        buttonPanLeft = add_text(this, arrowBaseX - 45, arrowBaseY + 30, " ◀ ", "#ccccff");
+        buttonPanLeft.setInteractive({ useHandCursor: true });
+
+        buttonPanCenter = add_text(this, arrowBaseX, arrowBaseY + 30, " ● ", "#ffcccc");
+        buttonPanCenter.setInteractive({ useHandCursor: true });
+
+        buttonPanRight = add_text(this, arrowBaseX + 45, arrowBaseY + 30, " ▶ ", "#ccccff");
+        buttonPanRight.setInteractive({ useHandCursor: true });
+
+        buttonPanDown = add_text(this, arrowBaseX, arrowBaseY + 60, " ▼ ", "#ccccff");
+        buttonPanDown.setInteractive({ useHandCursor: true });
+
+        // Zoom display
+        zoomDisplay = add_text(this, controlPanelX + 180, controlPanelY + 110, "100%", "#e0e0e0");
+
+        // Store references for update function
+        this.zoomDisplay = zoomDisplay;
+        this.buttonZoomIn = buttonZoomIn;
+        this.buttonZoomOut = buttonZoomOut;
+        this.buttonZoomReset = buttonZoomReset;
+        this.buttonZoomFit = buttonZoomFit;
+        this.buttonPanUp = buttonPanUp;
+        this.buttonPanDown = buttonPanDown;
+        this.buttonPanLeft = buttonPanLeft;
+        this.buttonPanRight = buttonPanRight;
+        this.buttonPanCenter = buttonPanCenter;
+
+        // Setup camera
+        camera = this.cameras.main;
+        camera.setBounds(0, 0, map.widthInPixels, map.heightInPixels);
+        camera.setZoom(zoom);
+        this.mainCamera = camera;
+
+        cursors = this.input.keyboard.createCursorKeys();
+        this.input.keyboard.addCapture([
+            Phaser.Input.Keyboard.KeyCodes.UP,
+            Phaser.Input.Keyboard.KeyCodes.DOWN,
+            Phaser.Input.Keyboard.KeyCodes.LEFT,
+            Phaser.Input.Keyboard.KeyCodes.RIGHT,
+        ]);
+        cameraControls = new Phaser.Cameras.Controls.SmoothedKeyControl({
+            camera: camera,
+            left: cursors.left,
+            right: cursors.right,
+            up: cursors.up,
+            down: cursors.down,
+            acceleration: 0.06,
+            drag: 0.0005,
+            maxSpeed: 6.0
+        });
+        this.cameraControls = cameraControls;
+
+        const clampZoom = (value) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
+        const applyZoom = (value) => camera.setZoom(clampZoom(value));
+        const fitToMap = () => {
+            // Calculate zoom to fit the map
+            let mapWidth = camera._bounds.width;
+            let mapHeight = camera._bounds.height;
+            let fitZoomX = config.width / mapWidth;
+            let fitZoomY = config.height / mapHeight;
+            let fitZoom = Math.min(fitZoomX, fitZoomY) * 0.95;  // 95% to have some margin
+            applyZoom(fitZoom);
+            // Center camera on map
+            camera.centerOn(mapWidth / 2, mapHeight / 2);
+        };
+
+        this.input.keyboard.on("keydown", (event) => {
+            const key = event.key;
+            if (key === "+" || key === "=") {
+                event.preventDefault();
+                applyZoom(camera.zoom + ZOOM_STEP);
+                return;
+            }
+            if (key === "-" || key === "_") {
+                event.preventDefault();
+                applyZoom(camera.zoom - ZOOM_STEP);
+                return;
+            }
+            if (key === "0") {
+                event.preventDefault();
+                applyZoom(zoom);
+                return;
+            }
+            if (key === "f" || key === "F") {
+                event.preventDefault();
+                fitToMap();
+            }
+        });
+
+        // Mouse wheel zoom
+        this.input.on(Phaser.Input.Events.POINTER_WHEEL, (pointer, gameObjects, deltaX, deltaY, deltaZ, event) => {
+            if (event) event.preventDefault();
+            let newZoom = camera.zoom;
+            if (deltaY > 0) {
+                newZoom -= ZOOM_STEP;
+            } else if (deltaY < 0) {
+                newZoom += ZOOM_STEP;
+            }
+            applyZoom(newZoom);
+        });
+
+        // Mouse drag to pan camera
+        this.input.on(Phaser.Input.Events.POINTER_DOWN, (pointer) => {
+            if (pointer.middleButtonDown() || (pointer.leftButtonDown() && pointer.event.shiftKey)) {
+                isDragging = true;
+            }
+        });
+
+        this.input.on(Phaser.Input.Events.POINTER_MOVE, (pointer) => {
+            if (!isDragging) return;
+            const dx = (pointer.prevPosition.x - pointer.position.x) / camera.zoom;
+            const dy = (pointer.prevPosition.y - pointer.position.y) / camera.zoom;
+            camera.scrollX += dx;
+            camera.scrollY += dy;
+        });
+
+        this.input.on(Phaser.Input.Events.POINTER_UP, () => {
+            isDragging = false;
+        });
+        this.input.on(Phaser.Input.Events.POINTER_UP_OUTSIDE, () => {
+            isDragging = false;
+        });
+
+        // Click to center on a nearby persona
+        this.input.on(Phaser.Input.Events.POINTER_DOWN, (pointer) => {
+            if (pointer.leftButtonDown() && !pointer.event.shiftKey) {
+                for (let personaName in personas) {
+                    let persona = personas[personaName];
+                    let distance = Phaser.Math.Distance.Between(
+                        pointer.worldX, pointer.worldY,
+                        persona.x, persona.y
+                    );
+                    if (distance < 50) {
+                        camera.pan(persona.x, persona.y, 300, "Power2");
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Setup personas
+        for (let i=0; i<Object.keys(spawn_tile_loc).length; i++) {
+            let persona_name = Object.keys(spawn_tile_loc)[i];
+            let start_pos = [spawn_tile_loc[persona_name][0] * tile_width + tile_width / 2, spawn_tile_loc[persona_name][1] * tile_width + tile_width];
+            let new_sprite = this.physics.add.sprite(start_pos[0], start_pos[1], persona_name, "down").setSize(30, 40).setOffset(0, 0);
+            // Scale up the sprite
+            new_sprite.displayWidth = 40;
+            new_sprite.scaleY = new_sprite.scaleX;
+
+            // Here, we are creating the persona and its pronunciatio sprites.
+            personas[persona_name] = new_sprite;
+            pronunciatios[persona_name] = this.add.text(
+                new_sprite.body.x - 15,
+                new_sprite.body.y - 15 - 25,
+                "",
+                {
+                    font: "18px monospace",
+                    fill: "#000000",
+                    backgroundColor: "#ffffcc",
+                    padding: { x: 4, y: 4},
+                    border:"solid",
+                    borderRadius:"10px"
+                }
+            ).setDepth(3);
+            pronunciatios[persona_name].alpha = 0.7;
+        }
+
+        const firstPersonaName = Object.keys(personas)[0];
+        if (firstPersonaName && personas[firstPersonaName]) {
+            camera.centerOn(personas[firstPersonaName].x, personas[firstPersonaName].y);
+        } else {
+            camera.centerOn(map.widthInPixels / 2, map.heightInPixels / 2);
+        }
+
+        // Create animations
+        const anims = this.anims;
+        for (let i = 0; i < Object.keys(persona_names).length; i++) {
+            let persona_name = Object.keys(persona_names)[i];
+            let left_walk_name = persona_name + "-left-walk";
+            let right_walk_name = persona_name + "-right-walk";
+            let down_walk_name = persona_name + "-down-walk";
+            let up_walk_name = persona_name + "-up-walk";
+
+            frameRate = 4;
+            if (movement_speed > 1) frameRate = 8;
+
+            anims.create({
+                key: left_walk_name,
+                frames: anims.generateFrameNames(persona_name, { prefix: "left-walk.", start: 0, end: 3, zeroPad: 3 }),
+                frameRate: frameRate,
+                repeat: -1
+            });
+
+            anims.create({
+                key: right_walk_name,
+                frames: anims.generateFrameNames(persona_name, { prefix: "right-walk.", start: 0, end: 3, zeroPad: 3 }),
+                frameRate: frameRate,
+                repeat: -1
+            });
+
+            anims.create({
+                key: down_walk_name,
+                frames: anims.generateFrameNames(persona_name, { prefix: "down-walk.", start: 0, end: 3, zeroPad: 3 }),
+                frameRate: frameRate,
+                repeat: -1
+            });
+
+            anims.create({
+                key: up_walk_name,
+                frames: anims.generateFrameNames(persona_name, { prefix: "up-walk.", start: 0, end: 3, zeroPad: 3 }),
+                frameRate: frameRate,
+                repeat: -1
+            });
+        }
+
+        // ===== Setup Button Event Handlers (only once in create) =====
+        // Play button
+        buttonPlay.on("pointerdown", function() {
+            if (finished) return;
+            buttonPlay.text = "[运行]";
+            buttonPause.text = " 暂停 ";
+            paused = false;
+        });
+
+        // Pause button
+        buttonPause.on("pointerdown", function() {
+            if (finished) return;
+            buttonPlay.text = " 运行 ";
+            buttonPause.text = "[暂停]";
+            paused = true;
+        });
+
+        // Show conversation
+        buttonShowConversation.on("pointerdown", function() {
+            buttonShowConversation.text = "[显示对话]";
+            buttonHideConversation.text = " 隐藏对话 ";
+            textConversation.setVisible(true);
+        });
+
+        // Hide conversation
+        buttonHideConversation.on("pointerdown", function() {
+            buttonShowConversation.text = " 显示对话 ";
+            buttonHideConversation.text = "[隐藏对话]";
+            textConversation.setVisible(false);
+        });
+
+        // ===== Zoom & Pan Button Handlers =====
+        const initialZoom = zoom;
+
+        // Zoom In
+        buttonZoomIn.on("pointerdown", function() {
+            applyZoom(camera.zoom + ZOOM_STEP);
+        });
+
+        // Zoom Out
+        buttonZoomOut.on("pointerdown", function() {
+            applyZoom(camera.zoom - ZOOM_STEP);
+        });
+
+        // Zoom Reset (back to initial zoom from URL parameter)
+        buttonZoomReset.on("pointerdown", function() {
+            applyZoom(initialZoom);
+        });
+
+        // Zoom Fit (fit entire map in view)
+        buttonZoomFit.on("pointerdown", function() {
+            fitToMap();
+        });
+
+        // Pan Up
+        buttonPanUp.on("pointerdown", function() {
+            camera.scrollY -= PAN_STEP / camera.zoom;
+        });
+
+        // Pan Down
+        buttonPanDown.on("pointerdown", function() {
+            camera.scrollY += PAN_STEP / camera.zoom;
+        });
+
+        // Pan Left
+        buttonPanLeft.on("pointerdown", function() {
+            camera.scrollX -= PAN_STEP / camera.zoom;
+        });
+
+        // Pan Right
+        buttonPanRight.on("pointerdown", function() {
+            camera.scrollX += PAN_STEP / camera.zoom;
+        });
+
+        // Pan Center (center on first persona or map center)
+        buttonPanCenter.on("pointerdown", function() {
+            let firstPersonaName = Object.keys(personas)[0];
+            if (firstPersonaName && personas[firstPersonaName]) {
+                camera.pan(personas[firstPersonaName].x, personas[firstPersonaName].y, 300, 'Power2');
+            } else {
+                camera.centerOn(map.widthInPixels / 2, map.heightInPixels / 2);
+            }
+        });
+
+        // Initial health panel update
+        updateHealthPanel(step.toString());
+    }
+
+    // Update function
+    function update(time, delta) {
+        const camera = this.mainCamera || this.cameras.main;
+        if (this.cameraControls) {
+            this.cameraControls.update(delta);
+        }
+
+        let curr_focused_persona = document.getElementById("temp_focus").textContent;
+        if (curr_focused_persona != "") {
+            const targetPersona = personas[curr_focused_persona];
+            if (targetPersona && camera) {
+                camera.pan(targetPersona.x, targetPersona.y, 300, "Power2");
+            }
+            document.getElementById("temp_focus").innerHTML = "";
+        }
+
+        if (this.zoomDisplay && camera) {
+            const currentZoomPercent = Math.round(camera.zoom * 100);
+            this.zoomDisplay.setText(currentZoomPercent + "%");
+        }
+
+        if (finished || paused) {
+            return;
+        }
+
+        curr_datetime = new Date(start_datetime.getTime());
+        curr_year = curr_datetime.getFullYear().toString().padStart(4, "0");
+        curr_month = (curr_datetime.getMonth() + 1).toString().padStart(2, "0");
+        curr_day = curr_datetime.getDate().toString().padStart(2, "0");
+        curr_hour = curr_datetime.getHours().toString().padStart(2, "0");
+        curr_minute = curr_datetime.getMinutes().toString().padStart(2, "0");
+        conversation_key = `${curr_year}${curr_month}${curr_day}-${curr_hour}:${curr_minute}`;
+        conversation_key_text = conversation_data[conversation_key];
+        if (conversation_key_text && conversation_key_text != "") {
+            textConversation.setText(`\n${conversation_key} 对话记录：\n` + conversation_key_text);
+        }
+
+        // Moving personas
+        for (let i = 0; i < Object.keys(personas).length; i++) {
+            let curr_persona_name = Object.keys(personas)[i];
+            let curr_persona = personas[curr_persona_name];
+            let curr_pronunciatio = pronunciatios[Object.keys(personas)[i]];
+
+            if (step in all_movement) {
+                if (curr_persona_name.replace("_", " ") in all_movement[step]) {
+                    if (execute_count == execute_count_max) {
+                        let curr_x = all_movement[step][curr_persona_name.replace("_", " ")]["movement"][0];
+                        let curr_y = all_movement[step][curr_persona_name.replace("_", " ")]["movement"][1];
+                        movement_target[curr_persona_name] = [curr_x * tile_width, curr_y * tile_width];
+
+                        let action = all_movement[step][curr_persona_name.replace("_", " ")]["action"];
+
+                        let act = action;
+                        act = act.length > 25 ? act.substring(0, 20)+"..." : act;
+                        pronunciatios[curr_persona_name].setText(curr_persona_name + ": " + act);
+
+                        // Updating the status of each personas
+                        if (description_data[curr_persona_name] && description_data[curr_persona_name]["currently"] !== undefined) {
+                            document.getElementById("agent_desc__"+curr_persona_name).innerHTML = description_data[curr_persona_name]["currently"];
+                        }
+                        document.getElementById("current_action__"+curr_persona_name).innerHTML = action;
+                        document.getElementById("target_address__"+curr_persona_name).innerHTML = all_movement[step][curr_persona_name.replace("_", " ")]["location"];
+
+                        // Health-specific: update health panel
+                        updateHealthPanel(step.toString());
+                    }
+
+                    if (execute_count > 0) {
+                        if (curr_persona.body.x < movement_target[curr_persona_name][0]) {
+                            curr_persona.body.x += movement_speed;
+                            anims_direction = "r";
+                            pre_anims_direction = "r";
+                            pre_anims_direction_dict[curr_persona_name] = "r";
+                        } else if (curr_persona.body.x > movement_target[curr_persona_name][0]) {
+                            curr_persona.body.x -= movement_speed;
+                            anims_direction = "l";
+                            pre_anims_direction = "l";
+                            pre_anims_direction_dict[curr_persona_name] = "l";
+                        } else if (curr_persona.body.y < movement_target[curr_persona_name][1]) {
+                            curr_persona.body.y += movement_speed;
+                            anims_direction = "d";
+                            pre_anims_direction = "d";
+                            pre_anims_direction_dict[curr_persona_name] = "d";
+                        } else if (curr_persona.body.y > movement_target[curr_persona_name][1]) {
+                            curr_persona.body.y -= movement_speed;
+                            anims_direction = "u";
+                            pre_anims_direction = "u";
+                            pre_anims_direction_dict[curr_persona_name] = "u";
+                        } else {
+                            anims_direction = "";
+                        }
+
+                        curr_pronunciatio.x = curr_persona.body.x - 15;
+                        curr_pronunciatio.y = curr_persona.body.y - 15 - 25;
+
+                        let left_walk_name = curr_persona_name + "-left-walk";
+                        let right_walk_name = curr_persona_name + "-right-walk";
+                        let down_walk_name = curr_persona_name + "-down-walk";
+                        let up_walk_name = curr_persona_name + "-up-walk";
+
+                        if (anims_direction == "l") {
+                            curr_persona.anims.play(left_walk_name, true);
+                        } else if (anims_direction == "r") {
+                            curr_persona.anims.play(right_walk_name, true);
+                        } else if (anims_direction == "u") {
+                            curr_persona.anims.play(up_walk_name, true);
+                        } else if (anims_direction == "d") {
+                            curr_persona.anims.play(down_walk_name, true);
+                        }
+                    }
+                }
+            } else {
+                if (pre_anims_direction_dict[curr_persona_name] == "l") curr_persona.setTexture(curr_persona_name, "left");
+                else if (pre_anims_direction_dict[curr_persona_name] == "r") curr_persona.setTexture(curr_persona_name, "right");
+                else if (pre_anims_direction_dict[curr_persona_name] == "u") curr_persona.setTexture(curr_persona_name, "up");
+                else if (pre_anims_direction_dict[curr_persona_name] == "d") curr_persona.setTexture(curr_persona_name, "down");
+                curr_persona.anims.stop();
+
+                finished = true;
+                buttonPlay.text = "[回放结束]";
+                buttonPause.setVisible(false);
+            }
+        }
+
+        if (execute_count == 0) {
+            for (let i = 0; i < Object.keys(personas).length; i++) {
+                let curr_persona_name = Object.keys(personas)[i];
+                let curr_persona = personas[curr_persona_name];
+                curr_persona.body.x = movement_target[curr_persona_name][0];
+                curr_persona.body.y = movement_target[curr_persona_name][1];
+            }
+            execute_count = execute_count_max + 1;
+            step = step + 1;
+
+            start_datetime = new Date(start_datetime.getTime() + step_size);
+            currentTime.setText(start_datetime.toLocaleTimeString("zh-CN", datetime_options));
+        }
+
+        execute_count -= 1;
+
+        // Zoom display is updated continuously above
+    }
+</script>

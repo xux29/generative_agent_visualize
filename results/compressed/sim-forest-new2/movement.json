@@ -1,0 +1,15 @@
+{
+  "start_datetime": "2025-02-13T09:30:00",
+  "stride": 10,
+  "sec_per_step": 10,
+  "persona_init_pos": {
+    "爸爸": [10, 10],
+    "妈妈": [12, 10],
+    "女儿": [14, 10]
+  },
+  "all_movement": {
+    "description": {},
+    "conversation": {}
+  },
+  "scene": "forest"
+}

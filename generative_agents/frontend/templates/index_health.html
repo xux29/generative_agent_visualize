@@ -1,0 +1,373 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+    /* Health simulation specific styles */
+    .health-container {
+        display: flex;
+        width: 100%;
+        height: 100vh;
+    }
+
+    .game-area {
+        flex: 1;
+        min-width: 0;
+    }
+
+    #game-container {
+        text-align: center;
+    }
+
+    /* Health sidebar styles */
+    .health-sidebar {
+        width: 280px;
+        min-width: 280px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 20px;
+        box-shadow: -2px 0 10px rgba(0,0,0,0.2);
+        overflow-y: auto;
+        height: 100vh;
+    }
+
+    .sidebar-section {
+        background: rgba(255, 255, 255, 0.15);
+        border-radius: 10px;
+        padding: 15px;
+        margin-bottom: 15px;
+    }
+
+    .sidebar-section h4 {
+        margin: 0 0 10px 0;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        opacity: 0.9;
+    }
+
+    .sidebar-section hr {
+        border: none;
+        border-top: 1px solid rgba(255, 255, 255, 0.3);
+        margin: 10px 0;
+    }
+
+    /* Day display */
+    .day-display {
+        text-align: center;
+        font-size: 24px;
+        font-weight: bold;
+        margin-bottom: 5px;
+    }
+
+    .day-label {
+        font-size: 12px;
+        opacity: 0.8;
+    }
+
+    /* Health score display */
+    .score-display {
+        text-align: center;
+    }
+
+    .score-value {
+        font-size: 48px;
+        font-weight: bold;
+        line-height: 1;
+    }
+
+    .score-label {
+        font-size: 12px;
+        opacity: 0.8;
+        margin-top: 5px;
+    }
+
+    /* Health zone badges */
+    .zone-badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: bold;
+        text-transform: uppercase;
+        margin-top: 8px;
+    }
+
+    .zone-safe { background: #28a745; }
+    .zone-normal { background: #17a2b8; }
+    .zone-warning { background: #ffc107; color: #333; }
+    .zone-danger { background: #fd7e14; }
+    .zone-emergency { background: #dc3545; }
+
+    /* Intervention display */
+    .intervention-level {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .level-indicator {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 20px;
+        font-weight: bold;
+        background: rgba(255, 255, 255, 0.2);
+    }
+
+    .level-0 { background: #6c757d; }
+    .level-1 { background: #28a745; }
+    .level-2 { background: #ffc107; color: #333; }
+    .level-3 { background: #dc3545; }
+
+    .level-text {
+        flex: 1;
+    }
+
+    .level-name {
+        font-weight: bold;
+    }
+
+    .level-action {
+        font-size: 12px;
+        opacity: 0.9;
+        margin-top: 3px;
+    }
+
+    /* Agent info */
+    .agent-info {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .agent-row {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+    }
+
+    .agent-avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.2);
+        overflow: hidden;
+    }
+
+    .agent-avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .agent-details {
+        flex: 1;
+    }
+
+    .agent-name {
+        font-weight: bold;
+        font-size: 13px;
+    }
+
+    .agent-activity {
+        font-size: 12px;
+        opacity: 0.9;
+    }
+
+    /* Tide phase indicator */
+    .tide-phase {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+    }
+
+    .tide-icon {
+        font-size: 16px;
+    }
+
+    /* Bottom agent panel (original style) */
+    .agent-panel {
+        padding: 1em 2em;
+        border: solid 1px #ddd;
+        border-radius: 5px;
+        margin-top: 10px;
+    }
+
+    .agent-portraits {
+        display: flex;
+        flex-wrap: wrap;
+        margin: -0.5em;
+    }
+
+    .agent-portrait-item {
+        text-align: center;
+        margin: 0.5em;
+    }
+
+    .agent-portrait-item a {
+        text-decoration: none;
+        color: #333;
+    }
+
+    .agent-portrait-item img {
+        width: 32px;
+        padding: 0;
+    }
+
+    .agent-detail-content {
+        background-color: #EEEEEE;
+        padding: 1em 2em;
+        border-radius: 5px;
+        display: none;
+    }
+
+    .agent-detail-content.active {
+        display: block;
+    }
+
+    .agent-detail-init {
+        background-color: #EEEEEE;
+        padding: 1em 2em;
+        border-radius: 5px;
+    }
+</style>
+
+<div class="health-container">
+    <!-- Left side: Game area -->
+    <div class="game-area">
+        <div id="game-container"></div>
+
+        <!-- Agent panel (original style at bottom) -->
+        <div class="agent-panel">
+            <div class="agent-portraits">
+                {% for p in persona_names %}
+                <div class="agent-portrait-item">
+                    <a href="javascript:void(0);" id="on_screen_det_trigger-{{ p }}">
+                        <div style="padding: 0;">
+                            {% set image_static = 'assets/' ~ map_folder ~ '/agents/' ~ p ~ '/portrait.png' %}
+                            <img src="{{ url_for('static', filename=image_static) }}">
+                            <br>
+                            {{ p }}
+                        </div>
+                    </a>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="agent-detail-init" id="on_screen_det_content-init">
+            <em>点击角色可查看更多细节。</em>
+        </div>
+
+        {% for p in persona_names %}
+        <div class="agent-detail-content" id="on_screen_det_content-{{ p }}">
+            <div style="display: flex; gap: 20px; align-items: flex-start;">
+                <div>
+                    {% set image_static = 'assets/' ~ map_folder ~ '/agents/' ~ p ~ '/portrait.png' %}
+                    <img src="{{ url_for('static', filename=image_static) }}" style="width: 48px;">
+                    <div style="display: none;" id="temp_focus"></div>
+                </div>
+                <div style="flex: 1;">
+                    <p><span id="agent_desc__{{ p }}"></span></p>
+                    <p>当前活动：<span id="current_action__{{ p }}"></span></p>
+                    <p>位置：<span id="target_address__{{ p }}"></span></p>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Right side: Health sidebar -->
+    <div class="health-sidebar">
+        <div class="sidebar-section">
+            <h4>模拟进度</h4>
+            <div class="day-display">
+                <span id="current-day">1</span> / 90
+            </div>
+            <div class="day-label" style="text-align: center;">天</div>
+        </div>
+
+        <div class="sidebar-section">
+            <h4>健康状态</h4>
+            <div class="score-display">
+                <div class="score-value" id="health-score">75</div>
+                <div class="score-label">累积健康分</div>
+                <span class="zone-badge zone-normal" id="health-zone">NORMAL</span>
+            </div>
+            <hr>
+            <div class="tide-phase">
+                <span class="tide-icon" id="tide-icon">🌊</span>
+                <span id="tide-phase">正常期</span>
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <h4>当前干预</h4>
+            <div class="intervention-level">
+                <div class="level-indicator level-0" id="level-indicator">0</div>
+                <div class="level-text">
+                    <div class="level-name" id="level-name">观察</div>
+                    <div class="level-action" id="level-action">-</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <h4>操作说明</h4>
+            <div style="font-size: 12px; line-height: 1.6; opacity: 0.9;">
+                <div><b>缩放控制</b> (左下角)</div>
+                <div>　＋/－ 按钮或滚轮缩放</div>
+                <div>　重置/适应 快速调整</div>
+                <div style="margin-top: 6px;"><b>平移控制</b> (左下角)</div>
+                <div>　方向按钮或键盘方向键</div>
+                <div>　● 按钮居中到角色</div>
+                <div style="margin-top: 6px;"><b>快捷操作</b></div>
+                <div>　Shift+拖动 平移视角</div>
+                <div>　点击角色 居中显示</div>
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <h4>角色状态</h4>
+            <div class="agent-info">
+                {% for p in persona_names %}
+                <div class="agent-row">
+                    <div class="agent-avatar">
+                        {% set image_static = 'assets/' ~ map_folder ~ '/agents/' ~ p ~ '/portrait.png' %}
+                        <img src="{{ url_for('static', filename=image_static) }}">
+                    </div>
+                    <div class="agent-details">
+                        <div class="agent-name">{{ p }}</div>
+                        <div class="agent-activity" id="sidebar-activity-{{ p }}">-</div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock content %}
+
+{% block js_content %}
+<script src='https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.js'></script>
+{% include 'main_script_health.html' %}
+<script>
+{% for p in persona_names %}
+    $('#on_screen_det_trigger-{{ p }}').click(function() {
+        $('#on_screen_det_content-init').hide();
+        {% for p_i in persona_names %}
+            $('#on_screen_det_content-{{p_i}}').removeClass('active').hide();
+            $('#on_screen_det_trigger-{{p_i}}').css('font-weight', '500');
+        {% endfor %}
+
+        $('#on_screen_det_trigger-{{ p }}').css('font-weight', '900');
+        $('#on_screen_det_content-{{ p }}').addClass('active').show();
+        document.getElementById("temp_focus").innerHTML = "{{ p }}";
+    });
+{% endfor %}
+</script>
+{% endblock js_content %}

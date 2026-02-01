@@ -30,7 +30,7 @@ def index():
 
     replay_file = f"{compressed_folder}/{file_movement}"
     if not os.path.exists(replay_file):
-        return f"The data file doesn‘t exist: '{replay_file}'<br />Run compress.py to generate the data first."
+        return f"The data file doesn't exist: '{replay_file}'<br />Run compress.py to generate the data first."
 
     with open(replay_file, "r", encoding="utf-8") as f:
         params = json.load(f)
