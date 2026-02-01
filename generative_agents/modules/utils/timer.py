@@ -53,6 +53,22 @@ class Timer:
             return date.strftime(date_format)
         return date
 
+    def get_logical_date(self, day_boundary_hour=6):
+        """获取逻辑日期：凌晨时间（hour < boundary）算作前一天
+
+        Args:
+            day_boundary_hour: 一天的边界小时，默认6点
+                              6:00 之前算前一天，6:00 之后算当天
+
+        Returns:
+            datetime.date: 逻辑日期
+        """
+        date = self._offset
+        if date.hour < day_boundary_hour:
+            # 凌晨时间，归属于前一天
+            return (date - datetime.timedelta(days=1)).date()
+        return date.date()
+
     def get_delta(self, start, end=None, mode="minute"):
         end = end or self.get_date()
         seconds = (end - start).total_seconds()

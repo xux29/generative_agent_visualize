@@ -604,7 +604,7 @@ class HealthSimulation:
 
         day_log = {
             "day": day,
-            "date": timer.get_date().strftime("%Y-%m-%d"),
+            "date": timer.get_logical_date().strftime("%Y-%m-%d"),  # 使用逻辑日期，凌晨归属前一天
             "events": [],
             "interventions": [],
             "agents": {}
@@ -1015,7 +1015,7 @@ class HealthSimulation:
 
         day_log = {
             "day": day,
-            "date": timer.get_date().strftime("%Y-%m-%d"),
+            "date": timer.get_logical_date().strftime("%Y-%m-%d"),  # 使用逻辑日期，凌晨归属前一天
             "events": [],
             "interventions": [],
             "agents": {},
@@ -1687,9 +1687,12 @@ class HealthSimulation:
                     raise
 
                 # Jump to next day's 19:00
+                # 基于逻辑日期计算，凌晨时间归属前一天
                 timer = utils.get_timer()
-                current = timer.get_date()
-                next_day = current.replace(hour=19, minute=0, second=0) + datetime.timedelta(days=1)
+                logical_date = timer.get_logical_date()  # 凌晨时间归属前一天
+                # 下一天 = 逻辑日期 + 1天 的 19:00
+                next_logical_date = logical_date + datetime.timedelta(days=1)
+                next_day = datetime.datetime.combine(next_logical_date, datetime.time(19, 0, 0))
                 timer.jump_to(next_day)
 
         # Generate final report and export results
