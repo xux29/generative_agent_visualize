@@ -56,7 +56,63 @@ except ImportError as e:
     sys.exit(1)
 
 
-def generate_movement_health(checkpoints_folder, compressed_folder, compressed_file):
+def _format_profile(profile, role_type):
+    """Format profile information for display in agent details.
+
+    Args:
+        profile: Profile dict from semantic_mapping.json
+        role_type: "target" or "manager"
+
+    Returns:
+        Formatted string for display
+    """
+    if not profile:
+        return ""
+
+    parts = []
+
+    # Name and basic info
+    name = profile.get("name", "")
+    age = profile.get("age", "")
+    gender = profile.get("gender", "")
+
+    if name:
+        basic_info = name
+        if age:
+            basic_info += f"，{age}岁"
+        if gender:
+            basic_info += f"，{gender}"
+        parts.append(basic_info)
+
+    # Personality
+    personality = profile.get("personality", "")
+    if personality:
+        parts.append(f"性格：{personality}")
+
+    # Background
+    background = profile.get("background", "")
+    if background:
+        parts.append(f"背景：{background}")
+
+    # Health condition (for target)
+    health_condition = profile.get("health_condition", "")
+    if health_condition:
+        parts.append(f"健康状况：{health_condition}")
+
+    # Role-specific info
+    if role_type == "target":
+        motivation = profile.get("motivation", "")
+        if motivation:
+            parts.append(f"动机：{motivation}")
+    elif role_type == "manager":
+        intervention_approach = profile.get("intervention_approach", "")
+        if intervention_approach:
+            parts.append(f"干预方式：{intervention_approach}")
+
+    return "。".join(parts) if parts else ""
+
+
+def generate_movement_health(checkpoints_folder, compressed_folder, compressed_file, scenario=None):
     """Generate movement.json with health data for visualization
 
     Extends the standard generate_movement to include:
@@ -68,6 +124,13 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
     - tide_phase: Current tide phase from nonlinear scorer
     """
     movement_file = os.path.join(compressed_folder, compressed_file)
+
+    # Load semantic mapping for profile information
+    semantic_mapping = {}
+    semantic_mapping_path = os.path.join(os.path.dirname(__file__), "data", "semantic_mapping.json")
+    if os.path.exists(semantic_mapping_path):
+        with open(semantic_mapping_path, "r", encoding="utf-8") as f:
+            semantic_mapping = json.load(f)
 
     conversation_file = "conversation.json"
     conversation = {}
@@ -155,6 +218,23 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
                 # Insert frame 0
                 if step == 1:
                     insert_frame0(persona_init_pos, all_movement, agent_name, map_folder)
+
+                    # Fill description from semantic_mapping profile
+                    if scenario and scenario in semantic_mapping:
+                        scenario_config = semantic_mapping[scenario]
+                        target_agent = scenario_config.get("target_agent", "")
+                        manager_agent = scenario_config.get("manager_agent", "")
+
+                        if agent_name == target_agent:
+                            profile = scenario_config.get("target_profile", {})
+                            all_movement["description"][agent_name] = {
+                                "currently": _format_profile(profile, "target")
+                            }
+                        elif agent_name == manager_agent:
+                            profile = scenario_config.get("manager_profile", {})
+                            all_movement["description"][agent_name] = {
+                                "currently": _format_profile(profile, "manager")
+                            }
 
                 # Get source coordinate
                 if agent_name in last_location:
@@ -403,7 +483,7 @@ def main():
     print(f"  Output: {compressed_folder}")
 
     # Generate health movement data
-    generate_movement_health(str(checkpoints_folder), str(compressed_folder), file_movement)
+    generate_movement_health(str(checkpoints_folder), str(compressed_folder), file_movement, scenario)
 
     # Generate markdown report (uses standard function)
     generate_report(str(checkpoints_folder), str(compressed_folder), file_markdown)

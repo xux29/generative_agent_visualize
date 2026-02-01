@@ -16,6 +16,7 @@
 
     #game-container {
         text-align: center;
+        position: relative;
     }
 
     /* Health sidebar styles */
@@ -234,12 +235,88 @@
         padding: 1em 2em;
         border-radius: 5px;
     }
+
+    /* Replay controls outside canvas */
+    .replay-controls {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        right: 10px;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.0);
+        flex-wrap: wrap;
+    }
+
+    .replay-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .replay-btn {
+        background: rgba(255, 255, 255, 0.75);
+        border: 1px solid rgba(214, 201, 109, 0.8);
+        border-radius: 4px;
+        padding: 6px 10px;
+        font-size: 14px;
+    }
+
+    .replay-btn.active {
+        font-weight: 700;
+        background: #fff2a1;
+    }
+
+    .replay-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
+
+    .replay-time {
+        font-family: Menlo, Consolas, monospace;
+        background: rgba(233, 255, 233, 0.8);
+        padding: 6px 10px;
+        border-radius: 4px;
+        border: 1px solid rgba(189, 229, 189, 0.8);
+    }
+
+    .replay-conversation {
+        position: absolute;
+        top: 70px;
+        left: 10px;
+        z-index: 5;
+        width: min(600px, calc(100% - 20px));
+        padding: 10px 12px;
+        border: 1px solid rgba(189, 229, 189, 0.8);
+        border-radius: 6px;
+        background: rgba(245, 255, 245, 0.7);
+        white-space: pre-wrap;
+        max-height: 160px;
+        overflow-y: auto;
+    }
 </style>
 
 <div class="health-container">
     <!-- Left side: Game area -->
     <div class="game-area">
-        <div id="game-container"></div>
+        <div id="game-container">
+            <div class="replay-controls">
+                <div class="replay-buttons">
+                    <button id="replay-play" class="replay-btn active" type="button">运行</button>
+                    <button id="replay-pause" class="replay-btn" type="button">暂停</button>
+                    <button id="replay-show-conv" class="replay-btn active" type="button">显示对话</button>
+                    <button id="replay-hide-conv" class="replay-btn" type="button">隐藏对话</button>
+                </div>
+                <div class="replay-time" id="replay-time">--:--</div>
+            </div>
+            <div class="replay-conversation" id="replay-conversation">——</div>
+        </div>
 
         <!-- Agent panel (original style at bottom) -->
         <div class="agent-panel">
@@ -319,14 +396,13 @@
         <div class="sidebar-section">
             <h4>操作说明</h4>
             <div style="font-size: 12px; line-height: 1.6; opacity: 0.9;">
-                <div><b>缩放控制</b> (左下角)</div>
-                <div>　＋/－ 按钮或滚轮缩放</div>
-                <div>　重置/适应 快速调整</div>
-                <div style="margin-top: 6px;"><b>平移控制</b> (左下角)</div>
-                <div>　方向按钮或键盘方向键</div>
-                <div>　● 按钮居中到角色</div>
-                <div style="margin-top: 6px;"><b>快捷操作</b></div>
+                <div><b>缩放控制</b></div>
+                <div>　滚轮或 + / - 键缩放</div>
+                <div>　0 重置，F 适应地图</div>
+                <div style="margin-top: 6px;"><b>平移控制</b></div>
+                <div>　键盘方向键平移</div>
                 <div>　Shift+拖动 平移视角</div>
+                <div style="margin-top: 6px;"><b>快捷操作</b></div>
                 <div>　点击角色 居中显示</div>
             </div>
         </div>

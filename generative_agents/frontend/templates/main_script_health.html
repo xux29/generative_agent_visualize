@@ -39,6 +39,15 @@
     let camera;
     let cameraControls;
 
+    const replayUI = {
+        playBtn: null,
+        pauseBtn: null,
+        showConvBtn: null,
+        hideConvBtn: null,
+        timeEl: null,
+        convEl: null,
+    };
+
     // Camera drag state
     let isDragging = false;
 
@@ -144,9 +153,89 @@
         }
     }
 
+    function setActive(el, active) {
+        if (!el) return;
+        if (active) {
+            el.classList.add("active");
+        } else {
+            el.classList.remove("active");
+        }
+    }
+
+    function updateReplayUIState() {
+        if (!replayUI.playBtn || !replayUI.pauseBtn) return;
+
+        if (finished) {
+            replayUI.playBtn.textContent = "回放结束";
+            replayUI.playBtn.disabled = true;
+            replayUI.pauseBtn.disabled = true;
+            setActive(replayUI.playBtn, false);
+            setActive(replayUI.pauseBtn, false);
+        } else {
+            replayUI.playBtn.textContent = "运行";
+            replayUI.pauseBtn.textContent = "暂停";
+            replayUI.playBtn.disabled = false;
+            replayUI.pauseBtn.disabled = false;
+            setActive(replayUI.playBtn, !paused);
+            setActive(replayUI.pauseBtn, paused);
+        }
+
+        if (replayUI.convEl && replayUI.showConvBtn && replayUI.hideConvBtn) {
+            const visible = replayUI.convEl.style.display !== "none";
+            setActive(replayUI.showConvBtn, visible);
+            setActive(replayUI.hideConvBtn, !visible);
+        }
+    }
+
+    function bindReplayUI() {
+        replayUI.playBtn = document.getElementById("replay-play");
+        replayUI.pauseBtn = document.getElementById("replay-pause");
+        replayUI.showConvBtn = document.getElementById("replay-show-conv");
+        replayUI.hideConvBtn = document.getElementById("replay-hide-conv");
+        replayUI.timeEl = document.getElementById("replay-time");
+        replayUI.convEl = document.getElementById("replay-conversation");
+
+        if (replayUI.playBtn) {
+            replayUI.playBtn.addEventListener("click", () => {
+                if (finished) return;
+                paused = false;
+                updateReplayUIState();
+            });
+        }
+        if (replayUI.pauseBtn) {
+            replayUI.pauseBtn.addEventListener("click", () => {
+                if (finished) return;
+                paused = true;
+                updateReplayUIState();
+            });
+        }
+        if (replayUI.showConvBtn) {
+            replayUI.showConvBtn.addEventListener("click", () => {
+                if (replayUI.convEl) replayUI.convEl.style.display = "block";
+                updateReplayUIState();
+            });
+        }
+        if (replayUI.hideConvBtn) {
+            replayUI.hideConvBtn.addEventListener("click", () => {
+                if (replayUI.convEl) replayUI.convEl.style.display = "none";
+                updateReplayUIState();
+            });
+        }
+
+        if (replayUI.timeEl) {
+            replayUI.timeEl.textContent = start_datetime.toLocaleTimeString("zh-CN", datetime_options);
+        }
+        updateReplayUIState();
+    }
+
     // Phaser configuration
-    const baseWidth = Math.floor(document.documentElement.clientWidth * 0.75);
-    const baseHeight = Math.floor(document.documentElement.clientHeight);
+    const containerEl = document.getElementById("game-container");
+    const baseWidth = containerEl && containerEl.clientWidth
+        ? containerEl.clientWidth
+        : Math.floor(document.documentElement.clientWidth * 0.75);
+    const baseHeight = containerEl && containerEl.clientHeight
+        ? containerEl.clientHeight
+        : Math.floor(document.documentElement.clientHeight);
     const config = {
         type: Phaser.AUTO,
         width: baseWidth,
@@ -297,111 +386,6 @@
         canvas.setAttribute("tabindex", "0");
         canvas.addEventListener("pointerdown", () => canvas.focus());
         this.input.mouse.disableContextMenu();
-
-        function add_text(game, x, y, text, background) {
-            res = game.add.text(
-                x,
-                y,
-                text,
-                {
-                    font: "24px 黑体",
-                    fontWeight: "normal",
-                    fill: "#000000",
-                    backgroundColor: background,
-                    padding: { x: 20, y: 4},
-                    align: "left",
-                    wordWrap: { width: 1000/zoom, useAdvancedWrap: true },
-                }
-            );
-
-            res.setDepth(10);
-            res.alpha = 0.8;
-            res.setScrollFactor(0);
-
-            return res;
-        }
-
-        posX = 20;
-        posY = 20;
-
-        // Add button: play, pause ...
-        buttonPlay = add_text(this, posX, posY, "[运行]", "#ffffcc");
-        buttonPlay.setInteractive();
-        posX += buttonPlay.width + 10;
-
-        buttonPause = add_text(this, posX, posY, " 暂停 ", "#ffffcc");
-        buttonPause.setInteractive();
-        posX += buttonPause.width + 10;
-
-        buttonShowConversation = add_text(this, posX, posY, "[显示对话]", "#ffffcc");
-        buttonShowConversation.setInteractive();
-        posX += buttonShowConversation.width + 10;
-
-        buttonHideConversation = add_text(this, posX, posY, " 隐藏对话 ", "#ffffcc");
-        buttonHideConversation.setInteractive();
-        posX += buttonHideConversation.width + 10;
-
-        // Show current time
-        currentTime = add_text(this, posX, posY, "", "#ccffcc");
-
-        // Show conversation content
-        textConversation = add_text(this, 20, posY + currentTime.height + 10, " —— ", "#ccffcc");
-
-        // ===== Zoom & Pan Control Buttons =====
-        // Create control panel at bottom-left corner
-        const controlPanelY = config.height - 180;
-        const controlPanelX = 20;
-
-        // Zoom controls
-        const zoomLabel = add_text(this, controlPanelX, controlPanelY, "🔍 缩放", "#e0e0e0");
-
-        buttonZoomIn = add_text(this, controlPanelX, controlPanelY + 35, " ＋ ", "#ffffcc");
-        buttonZoomIn.setInteractive({ useHandCursor: true });
-
-        buttonZoomOut = add_text(this, controlPanelX + buttonZoomIn.width + 10, controlPanelY + 35, " － ", "#ffffcc");
-        buttonZoomOut.setInteractive({ useHandCursor: true });
-
-        buttonZoomReset = add_text(this, controlPanelX + buttonZoomIn.width + buttonZoomOut.width + 20, controlPanelY + 35, "重置", "#ffffcc");
-        buttonZoomReset.setInteractive({ useHandCursor: true });
-
-        buttonZoomFit = add_text(this, controlPanelX + buttonZoomIn.width + buttonZoomOut.width + buttonZoomReset.width + 30, controlPanelY + 35, "适应", "#ffffcc");
-        buttonZoomFit.setInteractive({ useHandCursor: true });
-
-        // Pan controls (arrow buttons in cross pattern)
-        const panLabel = add_text(this, controlPanelX, controlPanelY + 75, "🧭 平移", "#e0e0e0");
-
-        const arrowBaseX = controlPanelX + 60;
-        const arrowBaseY = controlPanelY + 110;
-
-        buttonPanUp = add_text(this, arrowBaseX, arrowBaseY, " ▲ ", "#ccccff");
-        buttonPanUp.setInteractive({ useHandCursor: true });
-
-        buttonPanLeft = add_text(this, arrowBaseX - 45, arrowBaseY + 30, " ◀ ", "#ccccff");
-        buttonPanLeft.setInteractive({ useHandCursor: true });
-
-        buttonPanCenter = add_text(this, arrowBaseX, arrowBaseY + 30, " ● ", "#ffcccc");
-        buttonPanCenter.setInteractive({ useHandCursor: true });
-
-        buttonPanRight = add_text(this, arrowBaseX + 45, arrowBaseY + 30, " ▶ ", "#ccccff");
-        buttonPanRight.setInteractive({ useHandCursor: true });
-
-        buttonPanDown = add_text(this, arrowBaseX, arrowBaseY + 60, " ▼ ", "#ccccff");
-        buttonPanDown.setInteractive({ useHandCursor: true });
-
-        // Zoom display
-        zoomDisplay = add_text(this, controlPanelX + 180, controlPanelY + 110, "100%", "#e0e0e0");
-
-        // Store references for update function
-        this.zoomDisplay = zoomDisplay;
-        this.buttonZoomIn = buttonZoomIn;
-        this.buttonZoomOut = buttonZoomOut;
-        this.buttonZoomReset = buttonZoomReset;
-        this.buttonZoomFit = buttonZoomFit;
-        this.buttonPanUp = buttonPanUp;
-        this.buttonPanDown = buttonPanDown;
-        this.buttonPanLeft = buttonPanLeft;
-        this.buttonPanRight = buttonPanRight;
-        this.buttonPanCenter = buttonPanCenter;
 
         // Setup camera
         camera = this.cameras.main;
@@ -591,89 +575,7 @@
             });
         }
 
-        // ===== Setup Button Event Handlers (only once in create) =====
-        // Play button
-        buttonPlay.on("pointerdown", function() {
-            if (finished) return;
-            buttonPlay.text = "[运行]";
-            buttonPause.text = " 暂停 ";
-            paused = false;
-        });
-
-        // Pause button
-        buttonPause.on("pointerdown", function() {
-            if (finished) return;
-            buttonPlay.text = " 运行 ";
-            buttonPause.text = "[暂停]";
-            paused = true;
-        });
-
-        // Show conversation
-        buttonShowConversation.on("pointerdown", function() {
-            buttonShowConversation.text = "[显示对话]";
-            buttonHideConversation.text = " 隐藏对话 ";
-            textConversation.setVisible(true);
-        });
-
-        // Hide conversation
-        buttonHideConversation.on("pointerdown", function() {
-            buttonShowConversation.text = " 显示对话 ";
-            buttonHideConversation.text = "[隐藏对话]";
-            textConversation.setVisible(false);
-        });
-
-        // ===== Zoom & Pan Button Handlers =====
-        const initialZoom = zoom;
-
-        // Zoom In
-        buttonZoomIn.on("pointerdown", function() {
-            applyZoom(camera.zoom + ZOOM_STEP);
-        });
-
-        // Zoom Out
-        buttonZoomOut.on("pointerdown", function() {
-            applyZoom(camera.zoom - ZOOM_STEP);
-        });
-
-        // Zoom Reset (back to initial zoom from URL parameter)
-        buttonZoomReset.on("pointerdown", function() {
-            applyZoom(initialZoom);
-        });
-
-        // Zoom Fit (fit entire map in view)
-        buttonZoomFit.on("pointerdown", function() {
-            fitToMap();
-        });
-
-        // Pan Up
-        buttonPanUp.on("pointerdown", function() {
-            camera.scrollY -= PAN_STEP / camera.zoom;
-        });
-
-        // Pan Down
-        buttonPanDown.on("pointerdown", function() {
-            camera.scrollY += PAN_STEP / camera.zoom;
-        });
-
-        // Pan Left
-        buttonPanLeft.on("pointerdown", function() {
-            camera.scrollX -= PAN_STEP / camera.zoom;
-        });
-
-        // Pan Right
-        buttonPanRight.on("pointerdown", function() {
-            camera.scrollX += PAN_STEP / camera.zoom;
-        });
-
-        // Pan Center (center on first persona or map center)
-        buttonPanCenter.on("pointerdown", function() {
-            let firstPersonaName = Object.keys(personas)[0];
-            if (firstPersonaName && personas[firstPersonaName]) {
-                camera.pan(personas[firstPersonaName].x, personas[firstPersonaName].y, 300, 'Power2');
-            } else {
-                camera.centerOn(map.widthInPixels / 2, map.heightInPixels / 2);
-            }
-        });
+        bindReplayUI();
 
         // Initial health panel update
         updateHealthPanel(step.toString());
@@ -695,11 +597,6 @@
             document.getElementById("temp_focus").innerHTML = "";
         }
 
-        if (this.zoomDisplay && camera) {
-            const currentZoomPercent = Math.round(camera.zoom * 100);
-            this.zoomDisplay.setText(currentZoomPercent + "%");
-        }
-
         if (finished || paused) {
             return;
         }
@@ -712,8 +609,8 @@
         curr_minute = curr_datetime.getMinutes().toString().padStart(2, "0");
         conversation_key = `${curr_year}${curr_month}${curr_day}-${curr_hour}:${curr_minute}`;
         conversation_key_text = conversation_data[conversation_key];
-        if (conversation_key_text && conversation_key_text != "") {
-            textConversation.setText(`\n${conversation_key} 对话记录：\n` + conversation_key_text);
+        if (conversation_key_text && conversation_key_text != "" && replayUI.convEl) {
+            replayUI.convEl.textContent = `\n${conversation_key} 对话记录：\n` + conversation_key_text;
         }
 
         // Moving personas
@@ -798,8 +695,7 @@
                 curr_persona.anims.stop();
 
                 finished = true;
-                buttonPlay.text = "[回放结束]";
-                buttonPause.setVisible(false);
+                updateReplayUIState();
             }
         }
 
@@ -814,7 +710,9 @@
             step = step + 1;
 
             start_datetime = new Date(start_datetime.getTime() + step_size);
-            currentTime.setText(start_datetime.toLocaleTimeString("zh-CN", datetime_options));
+            if (replayUI.timeEl) {
+                replayUI.timeEl.textContent = start_datetime.toLocaleTimeString("zh-CN", datetime_options);
+            }
         }
 
         execute_count -= 1;
