@@ -1211,3 +1211,58 @@ class Scratch:
             ]
 
         return Result(prompt, _callback, failsafe, BatchStrategyResponse)
+
+    def prompt_determine_location_by_intent(self, intent, semantic_locations):
+        """
+        根据活动意图选择语义位置
+
+        Args:
+            intent (str): 活动意图描述（如"翻找零食"、"去厨房看看冰箱里有什么"）
+            semantic_locations (dict): 语义位置字典 {key: [addresses]}
+
+        Returns:
+            Result: (prompt, callback, failsafe, return_type)
+        """
+        # 构建位置描述
+        location_keys = list(semantic_locations.keys())
+        locations_desc_list = []
+        desc_map = {
+            "kitchen": "厨房 - 做饭、找食物、烹饪的地方",
+            "snacks_area": "零食区 - 存放零食、小吃的地方",
+            "bedroom": "卧室 - 睡觉、休息的地方",
+            "living_room": "客厅 - 看电视、休闲的地方",
+            "phone_area": "手机/电脑区 - 使用电子设备的地方",
+            "phone_storage": "手机存放处 - 手机被放置的地方",
+            "living_area": "生活区 - 日常活动的地方",
+            "common_area": "公共休息室 - 公共活动区域",
+        }
+        for key in location_keys:
+            desc = desc_map.get(key, key)
+            locations_desc_list.append(f"- {key}: {desc}")
+
+        locations_desc = "\n".join(locations_desc_list)
+
+        prompt = self.build_prompt(
+            "determine_location_by_intent",
+            {
+                "base_desc": self._base_desc(),
+                "intent": intent,
+                "locations_desc": locations_desc,
+                "location_keys": ", ".join(location_keys),
+            }
+        )
+
+        class DetermineLocationResponse(BaseModel):
+            res: str
+
+        failsafe = "bedroom"  # 默认回到卧室
+
+        def _callback(response):
+            # 验证返回的位置是否在有效列表中
+            response_lower = response.strip().lower()
+            for key in location_keys:
+                if key.lower() in response_lower or response_lower in key.lower():
+                    return key
+            return failsafe
+
+        return Result(prompt, _callback, failsafe, DetermineLocationResponse)

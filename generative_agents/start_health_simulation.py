@@ -1284,43 +1284,156 @@ class HealthSimulation:
         return day_log
 
     def _move_agents_based_on_intention(self, intention, day_log):
-        """Move agents based on intention content"""
+        """根据意图内容使用 LLM 判断语义位置并移动 agent"""
         if not intention:
             return
 
-        activity = intention.activity.lower()
+        activity = intention.activity
 
-        # Determine target location based on intention
-        target_location = None
-        if any(word in activity for word in ["厨房", "翻找食物", "kitchen"]):
-            target_location = "厨房"
-        elif any(word in activity for word in ["卧室", "睡觉", "bedroom", "sleep"]):
-            target_location = "卧室"
-        elif any(word in activity for word in ["客厅", "living"]):
-            target_location = "客厅"
-        elif any(word in activity for word in ["柜台", "商店", "店", "counter"]):
-            target_location = "柜台"
+        # 使用 LLM 解析意图到语义位置
+        semantic_key, target_address = self._resolve_semantic_location_with_llm(activity)
 
-        if target_location:
-            self._move_agent_to_location(self.target_agent, target_location)
+        if semantic_key and target_address:
+            # 移动目标 agent 到解析的位置
+            self._move_agent_to_semantic_address(self.target_agent, target_address, activity)
+        else:
+            self.logger.debug(f"无法解析位置: {activity}")
 
-        # Manager follows if intervening
+        # 如果管理者正在干预，跟随目标
         interventions = day_log.get("interventions", [])
         if interventions and interventions[-1].get("level", 0) > 0:
-            # Manager moves toward target
             self._move_agent_toward(self.manager_agent, self.target_agent)
 
-    def _move_agent_to_location(self, agent, location_keyword):
-        """Move agent to a location matching keyword"""
-        # Skip movement for simplicity - health simulation focuses on intentions/interventions
-        # not actual pathfinding
-        self.logger.debug(f"Skipping movement for {agent.name} to {location_keyword} (simplified mode)")
+    def _resolve_semantic_location_with_llm(self, intention_activity: str) -> tuple:
+        """
+        使用 LLM 解析活动意图到语义位置
 
-    def _move_agent_toward(self, agent, target_agent):
-        """Move agent toward another agent (for intervention)"""
-        # Skip movement for simplicity - health simulation focuses on intentions/interventions
-        # not actual pathfinding
-        self.logger.debug(f"Skipping movement for {agent.name} toward {target_agent.name} (simplified mode)")
+        Args:
+            intention_activity: 活动意图（如"翻找零食"、"想吃点东西"）
+
+        Returns:
+            tuple: (semantic_key, address_list) 或 (None, None)
+        """
+        semantic_locations = self.scenario.semantic_locations
+        if not semantic_locations:
+            self.logger.debug("场景无语义位置定义")
+            return None, None
+
+        # 使用 target_agent 的 LLM 能力判断位置
+        try:
+            location_key = self.target_agent.completion(
+                "determine_location_by_intent",
+                intention_activity,
+                semantic_locations
+            )
+
+            if location_key and location_key in semantic_locations:
+                addresses = semantic_locations[location_key]
+                if addresses:
+                    address = random.choice(addresses)
+                    self.logger.info(f"LLM 判断位置: '{intention_activity}' -> {location_key}")
+                    return location_key, address
+        except Exception as e:
+            self.logger.warning(f"LLM 位置判断失败: {e}")
+
+        return None, None
+
+    def _move_agent_to_semantic_address(self, agent, address: list, activity: str):
+        """移动 agent 到指定的 maze 地址"""
+        tiles = self.game.maze.get_address_tiles(address)
+        if not tiles:
+            self.logger.warning(f"地址无对应坐标: {address}")
+            return False
+
+        target_coord = random.choice(list(tiles))
+
+        old_coord = agent.coord
+        agent.coord = target_coord
+
+        # 更新 action 事件
+        if agent.action and agent.action.event:
+            agent.action.event.address = address
+            agent.action.event.describe = activity
+            agent.action.event.predicate = "正在"
+            agent.action.event.object = activity
+
+        self.logger.info(f"移动 {agent.name}: {old_coord} -> {target_coord} ({':'.join(address)})")
+        return True
+
+    def _move_agent_to_location(self, agent, location_keyword: str) -> bool:
+        """将 agent 移动到语义位置对应的坐标"""
+        if location_keyword not in self.scenario.semantic_locations:
+            self.logger.debug(f"语义位置 '{location_keyword}' 未定义")
+            return False
+
+        addresses = self.scenario.semantic_locations[location_keyword]
+        if not addresses:
+            return False
+
+        target_address = random.choice(addresses)
+
+        # 获取地址对应的坐标
+        tiles = self.game.maze.get_address_tiles(target_address)
+        if not tiles:
+            self.logger.warning(f"地址无对应坐标: {target_address}")
+            return False
+
+        target_coord = random.choice(list(tiles))
+
+        # 更新 agent 坐标
+        old_coord = agent.coord
+        agent.coord = target_coord
+
+        # 更新 action.event.address
+        if agent.action and agent.action.event:
+            agent.action.event.address = target_address
+
+        self.logger.info(f"移动 {agent.name}: {old_coord} -> {target_coord}")
+        return True
+
+    def _move_agent_toward(self, agent, target_agent) -> bool:
+        """将 agent 移动到目标 agent 所在区域（用于干预）"""
+        if target_agent.coord is None:
+            return False
+
+        # 获取目标的当前地址
+        target_address = None
+        if target_agent.action and target_agent.action.event:
+            target_address = target_agent.action.event.address
+
+        if not target_address:
+            target_tile = self.game.maze.tile_at(target_agent.coord)
+            if target_tile:
+                target_address = target_tile.get_address("arena", as_list=True)
+
+        if not target_address:
+            # 如果无法获取地址，直接移动到目标附近
+            old_coord = agent.coord
+            agent.coord = target_agent.coord
+            self.logger.info(f"移动 {agent.name} 靠近 {target_agent.name}: {old_coord} -> {agent.coord}")
+            return True
+
+        # 获取同一区域(arena级别)的坐标
+        area_address = target_address[:3] if len(target_address) >= 3 else target_address
+        tiles = self.game.maze.get_address_tiles(area_address)
+
+        if not tiles:
+            tiles = {target_agent.coord}
+
+        available_tiles = [t for t in tiles if t != target_agent.coord]
+        if not available_tiles:
+            available_tiles = list(tiles)
+
+        target_coord = random.choice(available_tiles)
+
+        old_coord = agent.coord
+        agent.coord = target_coord
+
+        if agent.action and agent.action.event:
+            agent.action.event.address = area_address
+
+        self.logger.info(f"移动 {agent.name} 靠近 {target_agent.name}: {old_coord} -> {target_coord}")
+        return True
 
     def _collect_target_data(self, day_log):
         """Collect target agent's data for scoring"""
@@ -1377,6 +1490,14 @@ class HealthSimulation:
             agent_dict = agent.to_dict()
             checkpoint_data["agents"][name].update(agent_dict)
             checkpoint_data["agents"][name]["coord"] = list(agent.coord) if agent.coord else [0, 0]
+
+            # Ensure action.event.address is saved from agent state
+            if agent.action and agent.action.event and agent.action.event.address:
+                if "action" not in checkpoint_data["agents"][name]:
+                    checkpoint_data["agents"][name]["action"] = {}
+                if "event" not in checkpoint_data["agents"][name]["action"]:
+                    checkpoint_data["agents"][name]["action"]["event"] = {}
+                checkpoint_data["agents"][name]["action"]["event"]["address"] = agent.action.event.address
 
             # Update action event to reflect current activity
             if name == self.target_name and intention:

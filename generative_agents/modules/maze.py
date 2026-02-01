@@ -136,10 +136,39 @@ class Maze:
         self.locked_areas = {}  # {address_str: {"locked": bool, "locked_by": agent_name}}
 
     def find_path(self, src_coord, dst_coord):
+        # 确保坐标是 tuple
+        if isinstance(src_coord, list):
+            src_coord = tuple(src_coord)
+        if isinstance(dst_coord, list):
+            dst_coord = tuple(dst_coord)
+
+        # 如果起点和终点相同，直接返回
+        if src_coord == dst_coord:
+            return [src_coord]
+
+        # 边界检查
+        if not (0 <= src_coord[0] < self.maze_width and 0 <= src_coord[1] < self.maze_height):
+            return [src_coord, dst_coord]  # 直接返回起终点
+        if not (0 <= dst_coord[0] < self.maze_width and 0 <= dst_coord[1] < self.maze_height):
+            return [src_coord, dst_coord]  # 直接返回起终点
+
         map = [[0 for _ in range(self.maze_width)] for _ in range(self.maze_height)]
         frontier, visited = [src_coord], set()
         map[src_coord[1]][src_coord[0]] = 1
+
+        max_iterations = self.maze_width * self.maze_height  # 防止无限循环
+        iterations = 0
+
         while map[dst_coord[1]][dst_coord[0]] == 0:
+            iterations += 1
+            if iterations > max_iterations:
+                # 超过最大迭代次数，返回直线路径
+                return [src_coord, dst_coord]
+
+            if not frontier:
+                # 没有可探索的节点了，目标不可达
+                return [src_coord, dst_coord]
+
             new_frontier = []
             for f in frontier:
                 for c in self.get_around(f):
@@ -153,13 +182,19 @@ class Maze:
                         new_frontier.append(c)
                         visited.add(c)
             frontier = new_frontier
+
         step = map[dst_coord[1]][dst_coord[0]]
         path = [dst_coord]
         while step > 1:
+            found = False
             for c in self.get_around(path[-1]):
-                if map[c[1]][c[0]] == step - 1:
-                    path.append(c)
-                    break
+                if 0 <= c[0] < self.maze_width and 0 <= c[1] < self.maze_height:
+                    if map[c[1]][c[0]] == step - 1:
+                        path.append(c)
+                        found = True
+                        break
+            if not found:
+                break  # 无法回溯，结束
             step -= 1
         return path[::-1]
 
