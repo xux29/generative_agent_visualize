@@ -17,6 +17,23 @@
     #game-container {
         text-align: center;
         position: relative;
+        background: #ffffff;
+    }
+
+    #game-container canvas {
+        background: #ffffff;
+    }
+
+    .sidebar-resizer {
+        width: 6px;
+        cursor: col-resize;
+        background: rgba(0, 0, 0, 0.04);
+        border-left: 1px solid rgba(0, 0, 0, 0.06);
+        border-right: 1px solid rgba(0, 0, 0, 0.06);
+    }
+
+    .sidebar-resizer:hover {
+        background: rgba(0, 0, 0, 0.08);
     }
 
     /* Health sidebar styles */
@@ -315,6 +332,22 @@
         border: 1px solid rgba(189, 229, 189, 0.8);
     }
 
+    .replay-speed {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: #333;
+    }
+
+    .replay-speed select {
+        background: rgba(255, 255, 255, 0.75);
+        border: 1px solid rgba(200, 200, 200, 0.8);
+        border-radius: 4px;
+        padding: 4px 6px;
+        font-size: 12px;
+    }
+
     .replay-conversation {
         position: absolute;
         top: 70px;
@@ -402,6 +435,15 @@
                     <button id="replay-show-conv" class="replay-btn active" type="button">显示对话</button>
                     <button id="replay-hide-conv" class="replay-btn" type="button">隐藏对话</button>
                 </div>
+                <div class="replay-speed">
+                    <label for="replay-speed-select">倍速</label>
+                    <select id="replay-speed-select">
+                        <option value="0.5">0.5x</option>
+                        <option value="1" selected>1x</option>
+                        <option value="2">2x</option>
+                        <option value="4">4x</option>
+                    </select>
+                </div>
                 <div class="replay-time" id="replay-time">--:--</div>
             </div>
             <div class="replay-conversation" id="replay-conversation">——</div>
@@ -427,6 +469,8 @@
         </div>
         {% endfor %}
     </div>
+
+    <div class="sidebar-resizer" id="sidebar-resizer" aria-hidden="true"></div>
 
     <!-- Right side: Health sidebar -->
     <div class="health-sidebar">
@@ -532,6 +576,57 @@ if (helpToggle && helpPopover) {
             helpPopover.classList.remove("visible");
             helpPopover.setAttribute("aria-hidden", "true");
         }
+    });
+}
+
+const sidebar = document.querySelector(".health-sidebar");
+const resizer = document.getElementById("sidebar-resizer");
+if (sidebar && resizer) {
+    const minWidth = 220;
+    const maxWidth = 520;
+    let resizing = false;
+    let startX = 0;
+    let startWidth = 0;
+
+    const updateSidebarWidth = (clientX) => {
+        const dx = startX - clientX;
+        const nextWidth = Math.max(minWidth, Math.min(maxWidth, startWidth + dx));
+        sidebar.style.width = `${nextWidth}px`;
+        sidebar.style.minWidth = `${nextWidth}px`;
+        if (typeof window.resizeHealthReplay === "function") {
+            window.resizeHealthReplay();
+        }
+    };
+
+    resizer.addEventListener("pointerdown", (event) => {
+        resizing = true;
+        startX = event.clientX;
+        startWidth = sidebar.getBoundingClientRect().width;
+        resizer.setPointerCapture(event.pointerId);
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        event.preventDefault();
+    });
+
+    resizer.addEventListener("pointermove", (event) => {
+        if (!resizing) return;
+        updateSidebarWidth(event.clientX);
+    });
+
+    resizer.addEventListener("pointerup", (event) => {
+        if (!resizing) return;
+        resizing = false;
+        resizer.releasePointerCapture(event.pointerId);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+    });
+
+    resizer.addEventListener("pointercancel", (event) => {
+        if (!resizing) return;
+        resizing = false;
+        resizer.releasePointerCapture(event.pointerId);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
     });
 }
 </script>

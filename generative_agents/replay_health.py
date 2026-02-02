@@ -31,7 +31,7 @@ def index():
     name = request.args.get("name", "")          # 记录名称 (e.g., health-phone-addiction-init75_medium_xxx)
     step = int(request.args.get("step", 0))      # 回放起始步数
     speed = int(request.args.get("speed", 2))    # 回放速度（0~5）
-    zoom = float(request.args.get("zoom", 0.8))  # 初始缩放比例
+    zoom = float(request.args.get("zoom", 0.0))  # 初始缩放比例（<=0 自动适配窗口）
 
     if len(name) < 1:
         # 显示可用的健康模拟列表

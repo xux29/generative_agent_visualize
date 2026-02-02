@@ -3,10 +3,16 @@
     let step = {{ step|tojson }};
     const stride_minutes = {{ sec_per_step|tojson }};
     let zoom = {{ zoom|tojson }};
-    if (zoom <= 0) zoom = document.documentElement.clientWidth / 4400;
+    const hasExplicitZoom = zoom > 0;
+    let autoFitEnabled = !hasExplicitZoom;
+    let initialZoom = null;
+    let mapPixelWidth = 0;
+    let mapPixelHeight = 0;
 
     let tile_width = 32;
-    let movement_speed = {{ play_speed|tojson }};
+    const base_movement_speed = {{ play_speed|tojson }};
+    let playbackSpeed = 1;
+    let movement_speed = base_movement_speed;
     let execute_count_max = tile_width / movement_speed;
     let execute_count = execute_count_max;
     let all_movement = {{ all_movement|tojson }};
@@ -52,6 +58,7 @@
         pauseBtn: null,
         showConvBtn: null,
         hideConvBtn: null,
+        speedSelect: null,
         timeEl: null,
         convEl: null,
     };
@@ -192,6 +199,24 @@
             const visible = replayUI.convEl.style.display !== "none";
             setActive(replayUI.showConvBtn, visible);
             setActive(replayUI.hideConvBtn, !visible);
+        }
+    }
+
+    function applyPlaybackSpeed(nextSpeed) {
+        const speedValue = Number(nextSpeed);
+        if (!Number.isFinite(speedValue) || speedValue <= 0) return;
+        if (speedValue === playbackSpeed) return;
+
+        const previousMax = execute_count_max;
+        const progressRatio = previousMax > 0 ? execute_count / previousMax : 1;
+
+        playbackSpeed = speedValue;
+        movement_speed = base_movement_speed * playbackSpeed;
+        execute_count_max = tile_width / movement_speed;
+        execute_count = Math.max(1, Math.round(execute_count_max * progressRatio));
+
+        if (window.phaserSceneRef && window.phaserSceneRef.anims) {
+            window.phaserSceneRef.anims.globalTimeScale = playbackSpeed;
         }
     }
 
@@ -411,6 +436,7 @@
         replayUI.pauseBtn = document.getElementById("replay-pause");
         replayUI.showConvBtn = document.getElementById("replay-show-conv");
         replayUI.hideConvBtn = document.getElementById("replay-hide-conv");
+        replayUI.speedSelect = document.getElementById("replay-speed-select");
         replayUI.timeEl = document.getElementById("replay-time");
         replayUI.convEl = document.getElementById("replay-conversation");
 
@@ -438,6 +464,12 @@
             replayUI.hideConvBtn.addEventListener("click", () => {
                 if (replayUI.convEl) replayUI.convEl.style.display = "none";
                 updateReplayUIState();
+            });
+        }
+        if (replayUI.speedSelect) {
+            replayUI.speedSelect.value = String(playbackSpeed);
+            replayUI.speedSelect.addEventListener("change", (event) => {
+                applyPlaybackSpeed(event.target.value);
             });
         }
 
@@ -478,6 +510,34 @@
 
     // Create Phaser game instance
     const game = new Phaser.Game(config);
+
+    function getGameContainerSize() {
+        const container = document.getElementById("game-container");
+        const width = container && container.clientWidth
+            ? container.clientWidth
+            : Math.floor(document.documentElement.clientWidth * 0.75);
+        const height = container && container.clientHeight
+            ? container.clientHeight
+            : Math.floor(document.documentElement.clientHeight);
+        return { width, height };
+    }
+
+    window.resizeHealthReplay = function() {
+        if (!game || !game.scale) return;
+        const { width, height } = getGameContainerSize();
+        if (width > 0 && height > 0) {
+            if (game.scale.parentSize) {
+                game.scale.parentSize.setSize(width, height);
+                game.scale.refresh();
+            }
+        }
+    };
+
+    window.addEventListener("resize", () => {
+        if (typeof window.resizeHealthReplay === "function") {
+            window.resizeHealthReplay();
+        }
+    });
     let cursors;
 
     // Preload function
@@ -536,6 +596,7 @@
 
     // Create function
     function create() {
+        window.phaserSceneRef = this;
         const map = this.make.tilemap({ key: "map" });
 
         // Add tilesets and create layers based on map folder
@@ -655,7 +716,26 @@
         // Setup camera
         camera = this.cameras.main;
         camera.setBounds(0, 0, map.widthInPixels, map.heightInPixels);
-        camera.setZoom(zoom);
+        camera.setBackgroundColor("#ffffff");
+        mapPixelWidth = map.widthInPixels;
+        mapPixelHeight = map.heightInPixels;
+
+        const clampZoom = (value) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
+        const applyZoom = (value) => camera.setZoom(clampZoom(value));
+        const applyFitZoom = () => {
+            if (!mapPixelWidth || !mapPixelHeight) return;
+            const fitZoom = Math.min(
+                camera.width / mapPixelWidth,
+                camera.height / mapPixelHeight
+            );
+            applyZoom(fitZoom);
+        };
+
+        initialZoom = hasExplicitZoom ? zoom : Math.min(
+            camera.width / mapPixelWidth,
+            camera.height / mapPixelHeight
+        );
+        applyZoom(initialZoom);
         this.mainCamera = camera;
 
         cursors = this.input.keyboard.createCursorKeys();
@@ -677,35 +757,34 @@
         });
         this.cameraControls = cameraControls;
 
-        const clampZoom = (value) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
-        const applyZoom = (value) => camera.setZoom(clampZoom(value));
         const fitToMap = () => {
-            // Calculate zoom to fit the map
-            let mapWidth = camera._bounds.width;
-            let mapHeight = camera._bounds.height;
-            let fitZoomX = config.width / mapWidth;
-            let fitZoomY = config.height / mapHeight;
-            let fitZoom = Math.min(fitZoomX, fitZoomY) * 0.95;  // 95% to have some margin
-            applyZoom(fitZoom);
-            // Center camera on map
-            camera.centerOn(mapWidth / 2, mapHeight / 2);
+            autoFitEnabled = true;
+            applyFitZoom();
+            camera.centerOn(mapPixelWidth / 2, mapPixelHeight / 2);
         };
 
         this.input.keyboard.on("keydown", (event) => {
             const key = event.key;
             if (key === "+" || key === "=") {
                 event.preventDefault();
+                autoFitEnabled = false;
                 applyZoom(camera.zoom + ZOOM_STEP);
                 return;
             }
             if (key === "-" || key === "_") {
                 event.preventDefault();
+                autoFitEnabled = false;
                 applyZoom(camera.zoom - ZOOM_STEP);
                 return;
             }
             if (key === "0") {
                 event.preventDefault();
-                applyZoom(zoom);
+                if (hasExplicitZoom) {
+                    autoFitEnabled = false;
+                    applyZoom(initialZoom);
+                } else {
+                    fitToMap();
+                }
                 return;
             }
             if (key === "f" || key === "F") {
@@ -723,6 +802,7 @@
             } else if (deltaY < 0) {
                 newZoom += ZOOM_STEP;
             }
+            autoFitEnabled = false;
             applyZoom(newZoom);
         });
 
@@ -838,6 +918,10 @@
                 frameRate: frameRate,
                 repeat: -1
             });
+        }
+
+        if (this.anims) {
+            this.anims.globalTimeScale = playbackSpeed;
         }
 
         bindReplayUI();
