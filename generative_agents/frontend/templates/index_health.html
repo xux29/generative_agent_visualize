@@ -329,6 +329,66 @@
         max-height: 160px;
         overflow-y: auto;
     }
+
+    .replay-timeline {
+        position: absolute;
+        left: 10px;
+        right: 10px;
+        bottom: 10px;
+        z-index: 5;
+        padding: 6px 8px;
+        pointer-events: auto;
+        overflow-x: auto;
+        overflow-y: hidden;
+        white-space: nowrap;
+    }
+
+    .timeline-track {
+        display: inline-flex;
+        align-items: flex-end;
+        gap: 14px;
+        padding: 4px 2px;
+        position: relative;
+    }
+
+    .timeline-day {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .timeline-day-label {
+        font-size: 10px;
+        color: #444;
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.75);
+        border: 1px solid rgba(200, 200, 200, 0.6);
+        line-height: 1.2;
+    }
+
+    .timeline-steps {
+        display: flex;
+        gap: 4px;
+        align-items: center;
+    }
+
+    .timeline-node {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        border: 1px solid rgba(200, 200, 200, 0.8);
+        background: rgba(255, 255, 255, 0.75);
+        cursor: pointer;
+        padding: 0;
+    }
+
+    .timeline-node.active {
+        background: rgba(255, 242, 161, 0.95);
+        border-color: rgba(214, 201, 109, 0.95);
+        transform: scale(1.15);
+    }
 </style>
 
 <div class="health-container">
@@ -345,6 +405,9 @@
                 <div class="replay-time" id="replay-time">--:--</div>
             </div>
             <div class="replay-conversation" id="replay-conversation">——</div>
+            <div class="replay-timeline" id="replay-timeline">
+                <div class="timeline-track" id="timeline-track"></div>
+            </div>
         </div>
 
         {% for p in persona_names %}

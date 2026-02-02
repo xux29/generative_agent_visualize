@@ -1,7 +1,7 @@
 <script type="text/javascript">
     // Initialize variables from Flask context
     let step = {{ step|tojson }};
-    let step_size = {{ sec_per_step|tojson }} * 1000; // Convert to milliseconds
+    const stride_minutes = {{ sec_per_step|tojson }};
     let zoom = {{ zoom|tojson }};
     if (zoom <= 0) zoom = document.documentElement.clientWidth / 4400;
 
@@ -15,6 +15,9 @@
 
     let datetime_options = { weekday: "long", year: "numeric", month: "long", day: "numeric" };
     let start_datetime = new Date(Date.parse({{ start_datetime|tojson }}));
+    const initial_start_datetime = new Date(start_datetime.getTime());
+    const framesPerStep = 60;
+    const checkpointTimes = Object.keys(conversation_data).sort();
 
     // Map folder for dynamic asset loading
     let map_folder = {{ map_folder|default('village')|tojson }};
@@ -33,6 +36,11 @@
     let pre_anims_direction_dict = {};
 
     let movement_target = {};
+
+    let timelineSteps = [];
+    let timelineNodes = [];
+    let timelineNodeByStep = {};
+    let activeTimelineNode = null;
 
     let finished = false;
     let paused = false;
@@ -187,6 +195,217 @@
         }
     }
 
+    function getCheckpointIndexForFrameStep(frameStep) {
+        if (!Number.isFinite(frameStep) || frameStep < 1) return 0;
+        return Math.floor((frameStep - 1) / framesPerStep);
+    }
+
+    function getTimeKeyForFrameStep(frameStep) {
+        const idx = getCheckpointIndexForFrameStep(frameStep);
+        if (idx >= 0 && idx < checkpointTimes.length) {
+            return checkpointTimes[idx];
+        }
+        return null;
+    }
+
+    function parseTimeKey(timeKey) {
+        if (!timeKey || typeof timeKey !== "string") return null;
+        const parts = timeKey.split("-");
+        if (parts.length !== 2) return null;
+        const datePart = parts[0];
+        const timePart = parts[1];
+        if (datePart.length !== 8) return null;
+        const year = Number(datePart.slice(0, 4));
+        const month = Number(datePart.slice(4, 6));
+        const day = Number(datePart.slice(6, 8));
+        const timePieces = timePart.split(":");
+        if (timePieces.length !== 2) return null;
+        const hour = Number(timePieces[0]);
+        const minute = Number(timePieces[1]);
+        if (![year, month, day, hour, minute].every(Number.isFinite)) return null;
+        return new Date(year, month - 1, day, hour, minute);
+    }
+
+    function formatTimeKey(timeKey) {
+        const parsed = parseTimeKey(timeKey);
+        if (!parsed) return timeKey || "--:--";
+        const year = parsed.getFullYear().toString().padStart(4, "0");
+        const month = (parsed.getMonth() + 1).toString().padStart(2, "0");
+        const day = parsed.getDate().toString().padStart(2, "0");
+        const hour = parsed.getHours().toString().padStart(2, "0");
+        const minute = parsed.getMinutes().toString().padStart(2, "0");
+        return `${year}-${month}-${day} ${hour}:${minute}`;
+    }
+
+    function formatClockTime(dateObj) {
+        if (!dateObj) return "--:--";
+        const year = dateObj.getFullYear().toString().padStart(4, "0");
+        const month = (dateObj.getMonth() + 1).toString().padStart(2, "0");
+        const day = dateObj.getDate().toString().padStart(2, "0");
+        const hour = dateObj.getHours().toString().padStart(2, "0");
+        const minute = dateObj.getMinutes().toString().padStart(2, "0");
+        return `${year}-${month}-${day} ${hour}:${minute}`;
+    }
+
+    function getSimulatedTimeForFrameStep(frameStep) {
+        const timeKey = getTimeKeyForFrameStep(frameStep);
+        let baseTime = timeKey ? parseTimeKey(timeKey) : null;
+        if (!baseTime) {
+            const checkpointIndex = getCheckpointIndexForFrameStep(frameStep);
+            baseTime = new Date(initial_start_datetime.getTime() + checkpointIndex * stride_minutes * 60 * 1000);
+        }
+
+        const frameOffset = (frameStep - 1) % framesPerStep;
+        const intervalMs = (stride_minutes * 60 * 1000) / framesPerStep;
+        return new Date(baseTime.getTime() + frameOffset * intervalMs);
+    }
+
+    function setReplayTimeForStep(frameStep) {
+        if (!replayUI.timeEl) return;
+        const simTime = getSimulatedTimeForFrameStep(frameStep);
+        replayUI.timeEl.textContent = formatClockTime(simTime);
+    }
+
+    function updateTimelineActive(currentStep) {
+        if (!timelineSteps.length) return;
+        let targetStep = timelineSteps[0];
+        for (let i = 0; i < timelineSteps.length; i++) {
+            if (timelineSteps[i] <= currentStep) {
+                targetStep = timelineSteps[i];
+            } else {
+                break;
+            }
+        }
+        const node = timelineNodeByStep[String(targetStep)];
+        if (!node) return;
+        if (activeTimelineNode && activeTimelineNode !== node) {
+            activeTimelineNode.classList.remove("active");
+        }
+        node.classList.add("active");
+        activeTimelineNode = node;
+    }
+
+    function snapPersonasToStep(targetStep) {
+        const stepData = all_movement[String(targetStep)];
+        if (!stepData) return;
+
+        for (const personaName in personas) {
+            const lookupName = personaName.replace("_", " ");
+            const agentData = stepData[lookupName];
+            if (!agentData || !agentData.movement) continue;
+
+            const newX = agentData.movement[0] * tile_width;
+            const newY = agentData.movement[1] * tile_width;
+            personas[personaName].body.x = newX;
+            personas[personaName].body.y = newY;
+            movement_target[personaName] = [newX, newY];
+
+            if (pronunciatios[personaName]) {
+                pronunciatios[personaName].x = newX - 15;
+                pronunciatios[personaName].y = newY - 15 - 25;
+            }
+        }
+    }
+
+    function jumpToStep(targetStep) {
+        if (!Number.isFinite(targetStep)) return;
+        if (!all_movement[String(targetStep)]) return;
+
+        step = targetStep;
+        execute_count = execute_count_max;
+        finished = false;
+        paused = false;
+        setReplayTimeForStep(targetStep);
+        updateReplayUIState();
+        updateHealthPanel(String(targetStep));
+        snapPersonasToStep(targetStep);
+        updateTimelineActive(targetStep);
+    }
+
+    function buildTimeline() {
+        const timelineEl = document.getElementById("replay-timeline");
+        const trackEl = document.getElementById("timeline-track");
+        if (!timelineEl || !trackEl) return;
+
+        if (!checkpointTimes.length) return;
+
+        const timelineEntries = [];
+        const dateIndexMap = new Map();
+        let nextDateIndex = 1;
+
+        for (let idx = 0; idx < checkpointTimes.length; idx++) {
+            const frameStep = idx * framesPerStep + 1;
+            if (!all_movement[String(frameStep)]) continue;
+
+            const timeKey = checkpointTimes[idx];
+            const datePart = timeKey ? timeKey.split("-")[0] : "";
+            if (!dateIndexMap.has(datePart)) {
+                dateIndexMap.set(datePart, nextDateIndex++);
+            }
+            const dayValue = dateIndexMap.get(datePart);
+
+            timelineEntries.push({
+                step: frameStep,
+                timeKey,
+                day: dayValue
+            });
+        }
+
+        if (!timelineEntries.length) return;
+
+        const dayMap = new Map();
+        for (const entry of timelineEntries) {
+            const dayKey = Number.isFinite(entry.day) ? entry.day : 1;
+            if (!dayMap.has(dayKey)) {
+                dayMap.set(dayKey, []);
+            }
+            dayMap.get(dayKey).push(entry);
+        }
+
+        const dayEntries = Array.from(dayMap.entries()).sort((a, b) => a[0] - b[0]);
+
+        timelineSteps = [];
+        timelineNodes = [];
+        timelineNodeByStep = {};
+        activeTimelineNode = null;
+        trackEl.innerHTML = "";
+
+        dayEntries.forEach(([dayValue, entries]) => {
+            const dayWrap = document.createElement("div");
+            dayWrap.className = "timeline-day";
+
+            const label = document.createElement("div");
+            label.className = "timeline-day-label";
+            label.textContent = `第${dayValue}天`;
+            dayWrap.appendChild(label);
+
+            const stepsWrap = document.createElement("div");
+            stepsWrap.className = "timeline-steps";
+
+            entries.forEach((entry) => {
+                const node = document.createElement("button");
+                node.type = "button";
+                node.className = "timeline-node";
+                node.dataset.step = String(entry.step);
+                node.title = `第${dayValue}天 ${formatTimeKey(entry.timeKey)}`;
+                node.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                    jumpToStep(entry.step);
+                });
+                stepsWrap.appendChild(node);
+                timelineNodes.push(node);
+                timelineSteps.push(entry.step);
+                timelineNodeByStep[String(entry.step)] = node;
+            });
+
+            dayWrap.appendChild(stepsWrap);
+            trackEl.appendChild(dayWrap);
+        });
+
+        timelineSteps.sort((a, b) => a - b);
+        updateTimelineActive(step);
+    }
+
     function bindReplayUI() {
         replayUI.playBtn = document.getElementById("replay-play");
         replayUI.pauseBtn = document.getElementById("replay-pause");
@@ -222,9 +441,7 @@
             });
         }
 
-        if (replayUI.timeEl) {
-            replayUI.timeEl.textContent = start_datetime.toLocaleTimeString("zh-CN", datetime_options);
-        }
+        setReplayTimeForStep(step);
         updateReplayUIState();
     }
 
@@ -627,6 +844,7 @@
 
         // Initial health panel update
         updateHealthPanel(step.toString());
+        buildTimeline();
     }
 
     // Update function
@@ -649,16 +867,11 @@
             return;
         }
 
-        curr_datetime = new Date(start_datetime.getTime());
-        curr_year = curr_datetime.getFullYear().toString().padStart(4, "0");
-        curr_month = (curr_datetime.getMonth() + 1).toString().padStart(2, "0");
-        curr_day = curr_datetime.getDate().toString().padStart(2, "0");
-        curr_hour = curr_datetime.getHours().toString().padStart(2, "0");
-        curr_minute = curr_datetime.getMinutes().toString().padStart(2, "0");
-        conversation_key = `${curr_year}${curr_month}${curr_day}-${curr_hour}:${curr_minute}`;
-        conversation_key_text = conversation_data[conversation_key];
+        const conversation_key = getTimeKeyForFrameStep(step);
+        const conversation_key_text = conversation_key ? conversation_data[conversation_key] : null;
         if (conversation_key_text && conversation_key_text != "" && replayUI.convEl) {
-            replayUI.convEl.textContent = `\n${conversation_key} 对话记录：\n` + conversation_key_text;
+            const displayKey = formatTimeKey(conversation_key);
+            replayUI.convEl.textContent = `\n${displayKey} 对话记录：\n` + conversation_key_text;
         }
 
         // Moving personas
@@ -689,6 +902,7 @@
 
                         // Health-specific: update health panel
                         updateHealthPanel(step.toString());
+                        updateTimelineActive(step);
                     }
 
                     if (execute_count > 0) {
@@ -757,10 +971,7 @@
             execute_count = execute_count_max + 1;
             step = step + 1;
 
-            start_datetime = new Date(start_datetime.getTime() + step_size);
-            if (replayUI.timeEl) {
-                replayUI.timeEl.textContent = start_datetime.toLocaleTimeString("zh-CN", datetime_options);
-            }
+            setReplayTimeForStep(step);
         }
 
         execute_count -= 1;
