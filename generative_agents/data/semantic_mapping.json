@@ -152,25 +152,23 @@
   },
   "weight-loss": {
     "scenario_name": "减肥场景（夫妻）",
-    "target_agent": "汤姆",
-    "manager_agent": "简",
-    "map_folder": "village",
+    "target_agent": "亚瑟",
+    "manager_agent": "伊莎贝拉",
+    "map_folder": "weight-loss-scene",
     "semantic_locations": {
       "kitchen": [
-        ["the Ville", "玫瑰酒吧", "酒吧", "厨房水槽"],
-        ["the Ville", "玫瑰酒吧", "酒吧", "烹饪区"],
-        ["the Ville", "霍布斯咖啡馆", "咖啡馆", "烹饪区"],
-        ["the Ville", "霍布斯咖啡馆", "咖啡馆", "厨房水槽"]
+        ["the Ville", "老两口的家", "厨房"],
+        ["the Ville", "老两口的家", "厨房", "冰箱"],
+        ["the Ville", "老两口的家", "厨房", "咖啡机"]
       ],
       "snacks_area": [
-        ["the Ville", "莫雷诺家族的房子", "公共休息室", "公共休息室桌子"],
-        ["the Ville", "莫雷诺家族的房子", "公共休息室", "架子"]
+        ["the Ville", "老两口的家", "厨房", "零食柜"]
       ],
       "bedroom": [
-        ["the Ville", "莫雷诺家族的房子", "汤姆和简的卧室"]
+        ["the Ville", "老两口的家", "卧室"]
       ],
       "living_room": [
-        ["the Ville", "莫雷诺家族的房子", "公共休息室"]
+        ["the Ville", "老两口的家", "客厅"]
       ]
     },
     "forbidden_foods": ["零食", "夜宵", "甜食", "高热量食物", "油炸食品", "薯片", "可乐", "蛋糕"],
@@ -179,7 +177,7 @@
       "end": "02:00"
     },
     "target_profile": {
-      "name": "丈夫（汤姆）",
+      "name": "丈夫（亚瑟）",
       "age": 35,
       "gender": "男",
       "self_discipline": "low",
@@ -196,7 +194,7 @@
       "typical_excuses": ["就吃一点点", "明天再开始减", "今天太累了"]
     },
     "manager_profile": {
-      "name": "妻子（简）",
+      "name": "妻子（伊莎贝拉）",
       "age": 33,
       "gender": "女",
       "supervision_style": "supportive",

@@ -276,6 +276,15 @@
         if (map_folder === "homeWithRobot") {
             // homeWithRobot uses a single main image tileset
             this.load.image("home_main", asset_base + "Generated Image January 12, 2026 - 3_09PM.jpeg");
+        } else if (map_folder === "weight-loss-scene") {
+            // weight-loss-scene tilesets (matching maze.json tileset_groups)
+            this.load.image("CuteRPG_Field_B (1)", asset_base + "CuteRPG_Field_B (1).png");
+            this.load.image("Room_Builder_32x32", asset_base + "Room_Builder_32x32.png");
+            this.load.image("interiors_pt1", asset_base + "interiors_pt1.png");
+            this.load.image("interiors_pt2", asset_base + "interiors_pt2.png");
+            this.load.image("interiors_pt3 (1)", asset_base + "interiors_pt3 (1).png");
+            this.load.image("interiors_pt4", asset_base + "interiors_pt4.png");
+            this.load.image("interiors_pt5", asset_base + "interiors_pt5.png");
         } else {
             // Village uses multiple tilesets
             this.load.image("walls", asset_base + "Room_Builder_32x32.png");
@@ -334,6 +343,45 @@
             const toiletLayer = map.createLayer("3马桶", tileset_group, 0, 0);
             const sofaLayer = map.createLayer("3沙发", tileset_group, 0, 0);
 
+            const collisionsLayer = map.createLayer("collisions", collisions, 0, 0);
+            if (collisionsLayer) {
+                collisionsLayer.setCollisionByProperty({ collide: true });
+                collisionsLayer.setDepth(-1);
+                collisionsLayer.setVisible(false);
+            }
+        } else if (map_folder === "weight-loss-scene") {
+            // weight-loss-scene map setup
+            const CuteRPG_Field_B = map.addTilesetImage("CuteRPG_Field_B (1)", "CuteRPG_Field_B (1)");
+            const Room_Builder = map.addTilesetImage("Room_Builder_32x32", "Room_Builder_32x32");
+            const interiors_pt1 = map.addTilesetImage("interiors_pt1", "interiors_pt1");
+            const interiors_pt2 = map.addTilesetImage("interiors_pt2", "interiors_pt2");
+            const interiors_pt3 = map.addTilesetImage("interiors_pt3 (1)", "interiors_pt3 (1)");
+            const interiors_pt4 = map.addTilesetImage("interiors_pt4", "interiors_pt4");
+            const interiors_pt5 = map.addTilesetImage("interiors_pt5", "interiors_pt5");
+
+            let tileset_group = [CuteRPG_Field_B, Room_Builder, interiors_pt1, interiors_pt2,
+                interiors_pt3, interiors_pt4, interiors_pt5, collisions];
+
+            // Create all layers and respect visibility from tilemap.json
+            const layerNames = [
+                "草地", "walls", "Tile Layer 9", "inside walls", "内饰", "ob on ob",
+                "人", "hair", "cloth", "1老两口的家", "2客厅", "2卫生间", "2卧室",
+                "2书房", "2厨房", "3钢琴", "3冰箱", "3咖啡机", "3零食柜",
+                "3笔记本电脑", "3床", "3马桶", "3洗漱台", "3沙发"
+            ];
+
+            layerNames.forEach(name => {
+                const layer = map.createLayer(name, tileset_group, 0, 0);
+                if (layer) {
+                    // Get visibility from tilemap data
+                    const tilemapLayer = map.getLayer(name);
+                    if (tilemapLayer && tilemapLayer.visible === false) {
+                        layer.setVisible(false);
+                    }
+                }
+            });
+
+            // Collisions layer (always hidden)
             const collisionsLayer = map.createLayer("collisions", collisions, 0, 0);
             if (collisionsLayer) {
                 collisionsLayer.setCollisionByProperty({ collide: true });
