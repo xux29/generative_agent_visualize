@@ -19,6 +19,14 @@
 | `89fb02d` | 父母管女儿玩手机的案例 | 手机成瘾场景(home) |
 | `b8803e3` | 健康管理模拟系统 | 完整45天模拟、数据收集、评分系统 |
 | `65c9205` | **非线性健康分计算系统** | 阈值效应、累积损伤、边际递减、随机波动 |
+| `835ac00` | 基于LLM的健康模拟位置更新 | 位置移动与行为联动 |
+| `214f6e6` | 修复可视化地图缩放控制 | 地图缩放交互优化 |
+| `ffb5220` | 修复跨午夜日期计算 | 跨午夜模拟日期正确处理 |
+| `b853b2c` | **Agent详情面板** | 显示角色profile信息（性格、背景等） |
+| `a5bb20f` | **新场景地图** | 添加weight-loss-scene专用地图 |
+| `195129b` | 更换减肥场景，优化可视化 | 减肥场景使用独立地图 |
+| `fa36748` | 健康回放控制和时间线 | Timeline时间线导航 |
+| `296266e` | **改进健康回放控件** | 倍速控制、播放控制优化 |
 
 ---
 
@@ -54,18 +62,17 @@
 | 模块 | 路径 | 功能 |
 |------|------|------|
 | **Intention** | `modules/intention.py` | 被监管者的行为意图（活动、持续时间、屈服阈值） |
-| **Strategy** | `modules/strategy.py` | 监管者的干预策略（4个等级：观察→劝说→移除→锁定） |
-| **Scorer** | `modules/scorer.py` | 线性健康分（规则计算）+ 满意度（LLM评估） |
-| **NonlinearHealthScorer** | `modules/scorer_nonlinear.py` | **[新]** 非线性健康分计算系统 |
-| **ScenarioConfig** | `modules/scenario_config.py` | **[新]** 场景配置加载器 |
-| **HealthAgentMixin** | `modules/agent_health.py` | **[新]** Agent健康管理扩展（复发机制） |
-| **AsymmetricGameEngine** | `modules/asymmetric_game.py` | **[新]** 非对称博弈引擎 |
-| **DailySettlement** | `modules/daily_settlement.py` | 每日结算（收集数据、触发反思） |
-| **DataCollector** | `modules/data_collector.py` | 数据收集与导出（JSON/CSV） |
+| **Strategy** | `modules/strategy.py` | 监管者策略（信任资本、习惯形成、阶段管理、情绪评分） |
+| **Scorer** | `modules/scorer.py` | 线性健康分 + **情绪评分系统** |
+| **NonlinearHealthScorer** | `modules/scorer_nonlinear.py` | 非线性健康分计算系统 |
+| **ScenarioConfig** | `modules/scenario_config.py` | 场景配置加载器 |
+| **HealthAgentMixin** | `modules/agent_health.py` | Agent健康管理扩展（复发机制） |
+| **AsymmetricGameEngine** | `modules/asymmetric_game.py` | 非对称博弈引擎（隐藏目标、耐心、挫败感） |
+| **Visualizer** | `modules/visualizer.py` | **[新]** 可视化数据生成器 |
 | **start_health_simulation.py** | 根目录 | 健康模拟主入口 |
-| **start_health_simulation_visual.py** | 根目录 | **[新]** 可视化版健康模拟（支持位置更新） |
-| **compress_health.py** | 根目录 | **[新]** 健康数据压缩（独立于compress.py） |
-| **replay_health.py** | 根目录 | **[新]** 健康可视化服务器（端口5001） |
+| **start_health_simulation_visual.py** | 根目录 | 可视化版健康模拟（支持位置更新） |
+| **compress_health.py** | 根目录 | 健康数据压缩（**含profile信息导出**） |
+| **replay_health.py** | 根目录 | 健康可视化服务器（端口5001） |
 
 ---
 
@@ -150,9 +157,41 @@ recovery = base_recovery            # 随机基础值
 
 ---
 
-## 四、干预机制详解
+## 四、情绪评分系统（新增功能）
 
-### 4.1 意图生成（Intention）
+### 4.1 设计目标
+
+追踪被监管者对干预的**主观感受**，平衡健康效果与用户体验。
+
+### 4.2 情绪评分组成
+
+```
+最终情绪分 = 基础分 + 频率修正 + 强度修正 + 合理性修正 + 习惯加成 + 服从修正
+```
+
+| 组件 | 说明 | 范围 |
+|------|------|------|
+| **base_score** | 基准分（根据自律程度） | 5-7 |
+| **frequency_modifier** | 干预频率惩罚 | -5 ~ 0 |
+| **intensity_modifier** | 干预强度惩罚 | -5 ~ 0 |
+| **reasonability_modifier** | 合理性加成（干预有依据） | 0 ~ +5 |
+| **habit_bonus** | 习惯形成加成 | 0 ~ +2 |
+| **compliance_modifier** | 服从行为加成 | 0 ~ +1 |
+
+### 4.3 情绪区间
+
+| 分数 | 状态 | 含义 |
+|------|------|------|
+| 8-10 | 满意 | 被监管者认可干预方式 |
+| 5-7 | 中等 | 有些不满但可接受 |
+| 3-4 | 低落 | 明显抵触情绪 |
+| 0-2 | 极差 | 可能引发对抗或放弃 |
+
+---
+
+## 五、干预机制详解
+
+### 5.1 意图生成（Intention）
 
 被监管者根据当前状态生成真实意图：
 
@@ -172,7 +211,7 @@ recovery = base_recovery            # 随机基础值
 }
 ```
 
-### 4.2 策略评估（Strategy）
+### 5.2 策略评估（Strategy）
 
 | 等级 | 名称 | 动作示例 | 适用场景 |
 |------|------|----------|----------|
@@ -181,7 +220,7 @@ recovery = base_recovery            # 随机基础值
 | **Level 2** | 移除 | 拿走手机/零食 | 中等强度干预 |
 | **Level 3** | 锁定 | 锁厨房门 | 时间很晚+习惯差 |
 
-### 4.3 干预执行流程
+### 5.3 干预执行流程
 
 ```
 Phase 1: 收集意图
@@ -198,7 +237,7 @@ Phase 4: 完成意图
     └→ 记录不健康行为（手机时长、进食事件）
 ```
 
-### 4.4 复发机制（潮汐性变化）
+### 5.4 复发机制（潮汐性变化）
 
 **核心概念**：被管了变好，放松后可能"复发"
 
@@ -217,9 +256,9 @@ self.behavior_quality_history = []   # 行为质量历史
 
 ---
 
-## 五、场景配置系统
+## 六、场景配置系统
 
-### 5.1 ScenarioConfig 类
+### 6.1 ScenarioConfig 类
 
 新增的场景配置加载器，支持：
 
@@ -248,21 +287,29 @@ class ScenarioConfig:
     }
 ```
 
-### 5.2 预配置场景
+### 6.2 预配置场景
 
-| 场景ID | 角色 | 核心矛盾 |
-|--------|------|----------|
-| **phone-addiction** | 山姆 → 亚当 | 孩子手机成瘾 vs 家长监管 |
-| **weight-loss** | 山姆 → 亚当 | 减肥目标 vs 深夜偷吃 |
-| **diabetes** | 山姆 → 亚当 | 糖尿病控制 vs 偷吃甜食 |
-| **home-diabetes** | 自定义角色 | 家庭糖尿病场景 |
-| **home-phone-addiction** | 自定义角色 | 家庭手机成瘾场景 |
+| 场景ID | 角色 | 地图 | 核心矛盾 |
+|--------|------|------|----------|
+| **phone-addiction** | 山姆 → 亚当 | village | 孩子手机成瘾 vs 家长监管 |
+| **weight-loss** | 伊莎贝拉 → 亚瑟 | **weight-loss-scene** | 减肥目标 vs 深夜偷吃 |
+| **diabetes** | 玛丽亚 → 克劳斯 | village | 糖尿病控制 vs 偷吃甜食 |
+| **home-diabetes** | 机器人 → 妈妈 | homeWithRobot | 家庭糖尿病场景 |
+| **home-phone-addiction** | 机器人 → 女儿 | homeWithRobot | 家庭手机成瘾场景 |
+
+### 6.3 场景地图
+
+| 地图文件夹 | 说明 | 使用场景 |
+|-----------|------|----------|
+| `village` | 原版AI小镇地图 | phone-addiction, diabetes |
+| `weight-loss-scene` | **[新]** 减肥场景专用家庭地图 | weight-loss |
+| `homeWithRobot` | 机器人管家场景地图 | home-diabetes, home-phone-addiction |
 
 ---
 
-## 六、使用方法
+## 七、使用方法
 
-### 6.1 命令行接口
+### 7.1 命令行接口
 
 ```bash
 cd generative_agents
@@ -271,13 +318,13 @@ cd generative_agents
 python start_health_simulation.py --scenario <场景> [选项]
 ```
 
-### 6.2 必需参数
+### 7.2 必需参数
 
 | 参数 | 说明 | 可选值 |
 |------|------|--------|
 | `--scenario` | 场景名称 | `weight-loss`, `phone-addiction`, `diabetes`, `home-diabetes`, `home-phone-addiction` |
 
-### 6.3 可选参数
+### 7.3 可选参数
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
@@ -291,7 +338,7 @@ python start_health_simulation.py --scenario <场景> [选项]
 | `--status` | 显示模拟状态后退出 | - |
 | `--run-all` | 运行所有9种实验组合 | - |
 
-### 6.4 使用示例
+### 7.4 使用示例
 
 ```bash
 # 手机成瘾场景（默认参数）
@@ -316,7 +363,7 @@ python start_health_simulation.py --scenario diabetes --parallel 4
 python start_health_simulation.py --scenario phone-addiction --run-all
 ```
 
-### 6.5 实验组合矩阵
+### 7.5 实验组合矩阵
 
 使用 `--run-all` 参数时，自动运行以下9种组合：
 
@@ -328,9 +375,9 @@ python start_health_simulation.py --scenario phone-addiction --run-all
 
 ---
 
-## 七、可视化系统
+## 八、可视化系统
 
-### 7.1 独立的可视化 Pipeline
+### 8.1 独立的可视化 Pipeline
 
 健康模拟可视化采用**完全独立的 Pipeline**，不影响原有的 `start.py` / `compress.py` / `replay.py`：
 
@@ -346,7 +393,7 @@ python start_health_simulation.py --scenario phone-addiction --run-all
   replay_health.py                   -> http://127.0.0.1:5001/
 ```
 
-### 7.2 可视化数据结构
+### 8.2 可视化数据结构
 
 ```
 results/
@@ -364,14 +411,14 @@ results/
         └── simulation.md             # 时间线报告
 ```
 
-### 7.3 可视化界面布局
+### 8.3 可视化界面布局
 
 采用**右侧边栏**设计，主游戏区域在左侧，健康信息面板在右侧：
 
 ```
 ┌─────────────────────────────────────┬──────────────────┐
-│                                     │  模拟进度        │
-│                                     │  Day 15 / 90     │
+│  [运行] [暂停] [显示对话]  倍速: 1x  │  模拟进度        │
+│  ─────────────────────────────────  │  Day 15 / 90     │
 │                                     ├──────────────────┤
 │                                     │  健康状态        │
 │          游戏地图                    │  75.0           │
@@ -381,15 +428,36 @@ results/
 │                                     │  当前干预        │
 │                                     │  Level 1 - 劝说  │
 │                                     ├──────────────────┤
-│                                     │  操作说明        │
-│                                     │  🖱️ 滚轮: 缩放   │
-│                                     │  🖱️ Shift+拖动   │
+│                                     │  情绪评分        │
+│                                     │  3.7 / 10        │
 ├─────────────────────────────────────┴──────────────────┤
-│  [亚当] [山姆]    点击角色可查看详情                      │
+│  Timeline: [Day1 ●●●][Day2 ●●●○][Day3 ○○○]...          │
+├─────────────────────────────────────────────────────────┤
+│  [亚瑟] [伊莎贝拉]    点击角色查看详情（含profile信息）   │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 7.4 健康区域颜色编码
+### 8.4 回放控件功能
+
+| 控件 | 功能 |
+|------|------|
+| **运行/暂停** | 控制回放播放状态 |
+| **显示/隐藏对话** | 切换对话框显示 |
+| **倍速选择** | 0.5x / 1x / 2x / 4x |
+| **Timeline** | 按天分组的时间线，点击节点跳转 |
+
+### 8.5 Agent详情面板
+
+点击角色名称可展开详情面板，显示：
+- 角色头像和名称
+- 当前活动和位置
+- **Profile信息**（从semantic_mapping.json加载）：
+  - 角色描述（年龄、性别、性格）
+  - 背景故事
+  - 健康状况
+  - 典型借口和弱点
+
+### 8.6 健康区域颜色编码
 
 | 区域 | 分数范围 | 颜色 | CSS类 |
 |------|----------|------|-------|
@@ -399,17 +467,18 @@ results/
 | DANGER | 30-49 | 橙色 | `.zone-danger` |
 | EMERGENCY | 0-29 | 红色 | `.zone-emergency` |
 
-### 7.5 地图交互功能
+### 8.7 地图交互功能
 
 | 操作 | 功能 |
 |------|------|
-| 🖱️ **滚轮** | 缩放地图 (0.3x - 2.0x) |
+| 🖱️ **滚轮** | 缩放地图 (0.1x - 3.0x) |
 | 🖱️ **Shift+拖动** | 平移视角 |
 | 🖱️ **中键拖动** | 平移视角 |
 | ⌨️ **方向键** | 移动视角 |
 | 🖱️ **点击角色** | 居中显示该角色 |
+| 🖱️ **点击Timeline节点** | 跳转到指定时间步 |
 
-### 7.6 可视化使用流程
+### 8.8 可视化使用流程
 
 ```bash
 cd generative_agents
@@ -435,7 +504,7 @@ python replay_health.py
 #    http://127.0.0.1:5001/?name=health-phone-addiction-init75_medium_20260130_162408
 ```
 
-### 7.7 movement.json 健康数据字段
+### 8.9 movement.json 健康数据字段
 
 可视化版 `movement.json` 除了标准字段外，还包含：
 
@@ -462,9 +531,9 @@ python replay_health.py
 
 ---
 
-## 八、输出数据
+## 九、输出数据
 
-### 8.1 输出目录结构
+### 9.1 输出目录结构
 
 ```
 results/health/<scenario>/
@@ -476,31 +545,85 @@ results/health/<scenario>/
 └── init90_high_<timestamp>/       # 初始分90 + 高自律
 ```
 
-### 8.2 非线性评分器输出示例
+### 9.2 每日数据输出示例（day_XX.json）
 
 ```json
 {
-  "day": 15,
-  "initial_score": 75.0,
-  "new_score": 58.3,
-  "change": -4.2,
-  "zone": "WARNING",
-  "components": {
-    "violation": -5.8,
-    "cumulative_multiplier": 1.06,
-    "daily_noise": 0.3
+  "day": 2,
+  "date": "2026-02-03",
+  "events": [...],
+  "interventions": [...],
+  "agents": {...},
+
+  "health_score": 66.17,
+  "health_change": 2.99,
+  "health_breakdown": {
+    "components": {
+      "natural_recovery": 1.34,
+      "compliance_bonus": 1.67,
+      "daily_noise": -0.02
+    },
+    "zone": "WARNING",
+    "consecutive_good_days": 1
   },
-  "consecutive_good_days": 0,
-  "consecutive_bad_days": 2,
-  "consecutive_violations": 3,
-  "in_plateau": false,
-  "below_warning": false
+
+  "emotion_score": 3.7,
+  "emotion_breakdown": {
+    "base_score": 6.0,
+    "frequency_modifier": -3.0,
+    "intensity_modifier": -4.3,
+    "reasonability_modifier": 4.5,
+    "final_score": 3.7
+  },
+
+  "strategy_manager": {
+    "state_update": {
+      "trust_level": 0.74,
+      "phase": "honeymoon",
+      "habit_stage": "forced"
+    },
+    "trust_capital": {
+      "current_capital": 56.0,
+      "autonomy_level": "medium"
+    }
+  },
+
+  "asymmetric_game": {
+    "manager_hidden": {
+      "goal": "establish_trust",
+      "patience": 100.0
+    },
+    "managed_person": {
+      "perceived_strictness": 0.66,
+      "frustration": 0.65
+    }
+  },
+
+  "dynamic_phase": "honeymoon",
+
+  "reflection": {
+    "today_summary": "...",
+    "strategy_effectiveness": "...",
+    "risk_patterns": [...],
+    "tomorrow_focus": "..."
+  }
 }
 ```
 
+### 9.3 核心输出字段说明
+
+| 字段 | 说明 |
+|------|------|
+| **health_score** | 累积健康分（非线性计算） |
+| **emotion_score** | 被监管者情绪评分（0-10） |
+| **strategy_manager** | 策略管理器状态（信任度、阶段、习惯形成） |
+| **asymmetric_game** | 非对称博弈状态（隐藏目标、耐心、挫败感） |
+| **dynamic_phase** | 当前干预阶段（honeymoon/adjustment/plateau等） |
+| **reflection** | 每日反思总结 |
+
 ---
 
-## 九、新增提示词模板
+## 十、新增提示词模板
 
 健康干预系统新增的提示词模板（位于 `data/prompts/`）：
 
@@ -515,7 +638,7 @@ results/health/<scenario>/
 
 ---
 
-## 十、与原版的主要区别
+## 十一、与原版的主要区别
 
 | 方面 | 原版斯坦福小镇 | 健康干预版 |
 |------|---------------|-----------|
@@ -531,7 +654,7 @@ results/health/<scenario>/
 
 ---
 
-## 十一、相关文档
+## 十二、相关文档
 
 | 文档 | 路径 | 内容 |
 |------|------|------|
@@ -544,7 +667,7 @@ results/health/<scenario>/
 
 ---
 
-## 十二、依赖安装
+## 十三、依赖安装
 
 此分支需要额外安装以下依赖：
 
@@ -554,7 +677,7 @@ pip install magentic llama-index llama-index-embeddings-huggingface llama-index-
 
 ---
 
-## 十三、总结
+## 十四、总结
 
 本健康干预模拟系统在斯坦福AI小镇的基础上，实现了：
 
@@ -565,8 +688,225 @@ pip install magentic llama-index llama-index-embeddings-huggingface llama-index-
 5. **复发机制**：潮汐性行为变化，更接近真实人类
 6. **长期模拟**：90天数据收集与趋势分析
 7. **环境控制**：手机可用性、厨房可达性等具身干预
-8. **多场景支持**：手机成瘾、减肥、糖尿病等预配置场景
+8. **多场景支持**：手机成瘾、减肥、糖尿病等预配置场景（含专用地图）
 9. **实验矩阵**：9种组合（3初始分 × 3自律程度）自动运行
 10. **批处理加速**：~10倍速度提升选项
+11. **[新] 情绪评分系统**：追踪被监管者满意度变化
+12. **[新] 非对称博弈引擎**：模拟信任建立、耐心消耗、叛逆冲动
+13. **[新] Timeline可视化**：按天分组的时间线导航
+14. **[新] Agent详情面板**：显示完整角色profile信息
+15. **[新] 倍速回放控制**：支持0.5x-4x播放速度
 
 适用于研究健康行为干预策略的有效性与用户体验平衡问题。
+
+---
+
+## 十五、地图添加指南
+
+### 15.1 地图文件结构
+
+每个场景地图需要以下文件：
+
+```
+frontend/static/assets/<地图名称>/
+├── tilemap/
+│   ├── tilemap.json          # Tiled 导出的地图文件（主文件）
+│   ├── *.png                  # tileset 图片资源
+│   └── *.tsx                  # tileset 定义文件（可选，需嵌入）
+├── maze.json                  # 迷宫配置（定义空间地址和碰撞）
+├── spatial_tree.json          # 空间树结构（层级地址定义）
+└── agents/                    # Agent 资源（可选）
+    └── <角色名>/
+        ├── agent.json         # Agent 配置
+        ├── portrait.png       # 头像
+        └── texture.png        # 精灵图
+```
+
+### 15.2 tilemap.json 关键配置
+
+**重要**：Phaser.js 不支持外部 tileset 引用，必须使用**嵌入式 tileset**。
+
+❌ **错误方式**（外部引用）：
+```json
+"tilesets": [
+    {
+        "firstgid": 1,
+        "source": "CuteRPG_Field_B(1).tsx"
+    }
+]
+```
+
+✅ **正确方式**（嵌入式）：
+```json
+"tilesets": [
+    {
+        "columns": 16,
+        "firstgid": 1,
+        "image": "CuteRPG_Field_B (1).png",
+        "imageheight": 512,
+        "imagewidth": 512,
+        "margin": 0,
+        "name": "CuteRPG_Field_B(1)",
+        "spacing": 0,
+        "tilecount": 256,
+        "tileheight": 32,
+        "tilewidth": 32
+    }
+]
+```
+
+### 15.3 从 Tiled 导出时的注意事项
+
+1. **导出前**：在 Tiled 中选择 `Map` → `Embed Tileset` 嵌入所有外部 tileset
+2. **或手动转换**：从 `.tsx` 文件提取属性并嵌入到 `tilemap.json`
+
+**tsx 文件格式参考**：
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<tileset version="1.10" tiledversion="1.11.2"
+         name="room"
+         tilewidth="32"
+         tileheight="32"
+         tilecount="8284"
+         columns="76">
+    <image source="Room_Builder_32x32.png" width="2432" height="3488"/>
+</tileset>
+```
+
+**转换为嵌入格式**：
+```json
+{
+    "columns": 76,
+    "firstgid": 257,
+    "image": "Room_Builder_32x32.png",
+    "imageheight": 3488,
+    "imagewidth": 2432,
+    "margin": 0,
+    "name": "room",
+    "spacing": 0,
+    "tilecount": 8284,
+    "tileheight": 32,
+    "tilewidth": 32
+}
+```
+
+### 15.4 maze.json 配置
+
+```json
+{
+    "world": "the Ville",           // 世界名称（与 spatial_tree 对应）
+    "tile_size": 32,                // 瓦片大小（像素）
+    "size": [20, 30],               // [height, width] 注意顺序！
+    "map": {
+        "asset": "map",
+        "tileset_groups": {...},
+        "layers": [
+            {"name": "1老两口的家", "tileset_group": "group_1"},
+            {"name": "2客厅", "tileset_group": "group_1"},
+            {"name": "collisions", "tileset_group": "group_1",
+             "depth": -1, "collision": {"exclusion": [-1]}}
+        ]
+    },
+    "tiles": [
+        {
+            "coord": [5, 4],
+            "address": ["老两口的家"],
+            "collision": true
+        },
+        {
+            "coord": [22, 6],
+            "address": ["老两口的家", "卧室", "床"]
+        }
+    ]
+}
+```
+
+**层命名规则**：
+- `1xxx` - sector（区域，如"老两口的家"）
+- `2xxx` - arena（房间，如"客厅"、"卧室"）
+- `3xxx` - game_object（物体，如"床"、"冰箱"）
+- `collisions` - 碰撞层
+
+### 15.5 spatial_tree.json 配置
+
+定义层级空间结构：
+
+```json
+{
+    "spatial": {
+        "address": {
+            "living_area": ["the Ville"]
+        },
+        "tree": {
+            "the Ville": {
+                "老两口的家": {
+                    "客厅": ["钢琴", "沙发"],
+                    "卫生间": ["马桶", "洗漱台"],
+                    "卧室": ["床"],
+                    "书房": ["笔记本电脑"],
+                    "厨房": ["零食柜", "冰箱", "厨房的门", "咖啡机"]
+                }
+            }
+        }
+    }
+}
+```
+
+### 15.6 常见问题排查
+
+| 错误信息 | 原因 | 解决方案 |
+|---------|------|---------|
+| `External tilesets unsupported` | tileset 使用外部引用 | 将 tsx 内容嵌入 tilemap.json |
+| `Cannot read properties of undefined` | tileset 数据不完整 | 检查所有 tileset 字段是否完整 |
+| `No data found for Tileset: xxx` | tileset name 与前端代码不匹配 | 确保 tilemap.json 中的 name 与 main_script_health.html 中 addTilesetImage() 的第一个参数完全一致（注意空格） |
+| `Image not found` | 图片路径错误 | 确保 `image` 字段指向同目录下的 png 文件 |
+| `Agent无法移动` | 碰撞配置错误 | 检查 maze.json 中的 collision 字段 |
+| `地址找不到` | spatial_tree 不匹配 | 确保 maze.json tiles 的 address 与 spatial_tree 一致 |
+
+### 15.7 Tileset 名称匹配要求
+
+**重要**：tilemap.json 中的 tileset `name` 字段必须与前端代码 `addTilesetImage()` 调用中的名称**完全匹配**。
+
+前端代码位置：`frontend/templates/main_script_health.html`
+
+**weight-loss-scene 需要的 tileset 名称**：
+```javascript
+// main_script_health.html 第 632-638 行
+map.addTilesetImage("CuteRPG_Field_B (1)", "CuteRPG_Field_B (1)");
+map.addTilesetImage("Room_Builder_32x32", "Room_Builder_32x32");
+map.addTilesetImage("interiors_pt1", "interiors_pt1");
+map.addTilesetImage("interiors_pt2", "interiors_pt2");
+map.addTilesetImage("interiors_pt3 (1)", "interiors_pt3 (1)");
+map.addTilesetImage("interiors_pt4", "interiors_pt4");
+map.addTilesetImage("interiors_pt5", "interiors_pt5");
+```
+
+因此 tilemap.json 中的 tileset name 必须是：
+| tileset name | 图片文件 |
+|--------------|----------|
+| `CuteRPG_Field_B (1)` | CuteRPG_Field_B (1).png |
+| `Room_Builder_32x32` | Room_Builder_32x32.png |
+| `interiors_pt1` | interiors_pt1.png |
+| `interiors_pt2` | interiors_pt2.png |
+| `interiors_pt3 (1)` | interiors_pt3 (1).png |
+| `interiors_pt4` | interiors_pt4.png |
+| `interiors_pt5` | interiors_pt5.png |
+
+**注意空格**：`CuteRPG_Field_B (1)` 和 `interiors_pt3 (1)` 的括号前有空格！
+
+### 15.8 weight-loss-scene 地图示例
+
+当前 `weight-loss-scene` 地图配置：
+
+- **地图尺寸**：30×20 tiles（宽×高）
+- **场景**：老两口的家（客厅、卫生间、卧室、书房、厨房）
+- **Tilesets**：7个嵌入式 tileset（名称必须与前端匹配）
+  - CuteRPG_Field_B (1).png
+  - Room_Builder_32x32.png
+  - interiors_pt1-5.png
+
+**使用此地图**：
+```python
+# 在 scenario_config.py 或命令行指定
+--scenario weight-loss  # 自动使用 weight-loss-scene 地图
+```

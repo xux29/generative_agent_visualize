@@ -81,6 +81,10 @@
                 "tileset_group": "group_1"
             },
             {
+                "name": "3厨房的门",
+                "tileset_group": "group_1"
+            },
+            {
                 "name": "collisions",
                 "tileset_group": "group_1",
                 "depth": -1,
@@ -2941,7 +2945,8 @@
             ],
             "address": [
                 "老两口的家",
-                "厨房"
+                "厨房",
+                "厨房的门"
             ]
         },
         {
