@@ -164,11 +164,20 @@
       "snacks_area": [
         ["the Ville", "老两口的家", "厨房", "零食柜"]
       ],
+      "kitchen_door": [
+        ["the Ville", "老两口的家", "厨房", "厨房的门"]
+      ],
       "bedroom": [
-        ["the Ville", "老两口的家", "卧室"]
+        ["the Ville", "老两口的家", "卧室"],
+        ["the Ville", "老两口的家", "卧室", "床"]
       ],
       "living_room": [
-        ["the Ville", "老两口的家", "客厅"]
+        ["the Ville", "老两口的家", "客厅"],
+        ["the Ville", "老两口的家", "客厅", "沙发"]
+      ],
+      "entertainment": [
+        ["the Ville", "老两口的家", "客厅", "沙发"],
+        ["the Ville", "老两口的家", "客厅", "电视"]
       ]
     },
     "forbidden_foods": ["零食", "夜宵", "甜食", "高热量食物", "油炸食品", "薯片", "可乐", "蛋糕"],
@@ -191,7 +200,12 @@
       "habit_formation_speed": "slow",
       "weak_points": ["夜宵", "零食", "高热量外卖"],
       "motivation": "想为了家庭健康改变，但经常半途而废",
-      "typical_excuses": ["就吃一点点", "明天再开始减", "今天太累了"]
+      "typical_excuses": ["就吃一点点", "明天再开始减", "今天太累了"],
+      "sleep_schedule": {
+        "target_sleep_time": "23:30",
+        "sleep_time_variance_minutes": 30,
+        "sleep_location": "bedroom"
+      }
     },
     "manager_profile": {
       "name": "妻子（伊莎贝拉）",

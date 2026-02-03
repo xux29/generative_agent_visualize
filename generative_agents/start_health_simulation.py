@@ -279,6 +279,13 @@ class HealthSimulation:
             self.target_agent.rebellion_level = profile.get("rebellion_level", "none")
             self.target_agent.special_notes = profile.get("special_notes", "")
 
+            # 睡眠计划（用于意图生成）
+            self.target_agent.sleep_schedule = profile.get("sleep_schedule", {
+                "target_sleep_time": "23:30",
+                "sleep_time_variance_minutes": 30,
+                "sleep_location": "bedroom"
+            })
+
             # 构建完整人设描述（供LLM使用）
             self.target_agent.persona_prompt = self.scenario.build_target_persona_prompt()
 
@@ -607,8 +614,28 @@ class HealthSimulation:
             "date": timer.get_logical_date().strftime("%Y-%m-%d"),  # 使用逻辑日期，凌晨归属前一天
             "events": [],
             "interventions": [],
-            "agents": {}
+            "agents": {},
+            "agent_positions": [],      # 新增：agent位置追踪
+            "manager_positions": [],    # 新增：管理者位置追踪
+            "turnaround_summary": {     # 新增：折返统计
+                "total_turnarounds": 0,
+                "blocked_attempts": []
+            }
         }
+
+        # 新增：跟踪环境状态变化（用于折返检测）
+        env_state = {
+            "kitchen_locked": False,
+            "snacks_removed": False,
+            "phone_removed": False
+        }
+
+        # 新增：重置agent位置到初始点（每天19:00）
+        initial_target_coord = (7, 6)  # 客厅初始位置
+        initial_manager_coord = (10, 7)  # 管理者初始位置
+        self.target_agent.coord = initial_target_coord
+        self.manager_agent.coord = initial_manager_coord
+        self.logger.info(f"Day {day}: Reset agent positions - {self.target_name} at {initial_target_coord}, {self.manager_name} at {initial_manager_coord}")
 
         # Reset daily state for health agents
         if hasattr(self.manager_agent, 'today_actions'):
@@ -662,13 +689,99 @@ class HealthSimulation:
 
             if intention:
                 self.logger.info(f"[{time_str}] {self.target_name} intends: {intention.activity}")
-                day_log["events"].append({
-                    "time": time_str,
-                    "type": "intention",
-                    "agent": self.target_name,
-                    "content": intention.activity,
-                    "inner_monologue": intention.inner_monologue
-                })
+
+                # 解析意图的目标位置（优先使用意图自带的，否则推断）
+                target_location = getattr(intention, 'target_location', None)
+                if not target_location:
+                    target_location = self._infer_target_location(intention.activity)
+
+                # 检查目标位置是否已被阻止（折返检测）
+                is_blocked, block_reason, blocked_at = self._check_env_blocked(target_location, env_state)
+
+                if is_blocked:
+                    # 生成折返事件
+                    turnaround = self._generate_turnaround(
+                        intention, target_location, block_reason, env_state
+                    )
+
+                    # 更新意图的折返状态
+                    intention.discovered_blocked = True
+                    intention.block_reason = block_reason
+                    intention.turnaround_monologue = turnaround.get("turnaround_monologue", "")
+                    intention.redirect_activity = turnaround.get("redirect_activity", "看电视")
+                    intention.redirect_location = turnaround.get("redirect_location", "living_room")
+
+                    # 记录原始意图（带目标位置）
+                    day_log["events"].append({
+                        "time": time_str,
+                        "type": "intention",
+                        "agent": self.target_name,
+                        "content": intention.activity,
+                        "inner_monologue": intention.inner_monologue,
+                        "target_location": target_location
+                    })
+
+                    # 记录折返事件（时间+几分钟）
+                    turnaround_time = self._add_minutes_to_time(time_str, 5)
+                    day_log["events"].append({
+                        "time": turnaround_time,
+                        "type": "turnaround",
+                        "agent": self.target_name,
+                        "original_activity": intention.activity,
+                        "target_location": target_location,
+                        "blocked_at": blocked_at,
+                        "block_reason": block_reason,
+                        "turnaround_monologue": turnaround.get("turnaround_monologue", ""),
+                        "redirect_activity": turnaround.get("redirect_activity", "看电视"),
+                        "redirect_location": turnaround.get("redirect_location", "living_room"),
+                        "emotional_reaction": turnaround.get("emotional_reaction", "resigned")
+                    })
+
+                    # 更新折返统计
+                    day_log["turnaround_summary"]["total_turnarounds"] += 1
+                    day_log["turnaround_summary"]["blocked_attempts"].append({
+                        "time": time_str,
+                        "location": target_location,
+                        "reason": block_reason
+                    })
+
+                    # 记录位置轨迹（折返）
+                    day_log["agent_positions"].append({
+                        "time": time_str,
+                        "agent": self.target_name,
+                        "location": blocked_at or target_location,
+                        "status": "blocked"
+                    })
+                    day_log["agent_positions"].append({
+                        "time": turnaround_time,
+                        "agent": self.target_name,
+                        "location": turnaround.get("redirect_location", "living_room"),
+                        "status": "redirected"
+                    })
+
+                    self.logger.info(
+                        f"[{time_str}] 折返: {intention.activity} -> 被阻止({block_reason}) -> "
+                        f"{turnaround.get('redirect_activity')}"
+                    )
+                else:
+                    # 正常记录意图（带目标位置）
+                    day_log["events"].append({
+                        "time": time_str,
+                        "type": "intention",
+                        "agent": self.target_name,
+                        "content": intention.activity,
+                        "inner_monologue": intention.inner_monologue,
+                        "target_location": target_location
+                    })
+
+                    # 记录位置轨迹（正常）
+                    if target_location:
+                        day_log["agent_positions"].append({
+                            "time": time_str,
+                            "agent": self.target_name,
+                            "location": target_location,
+                            "status": "arrived"
+                        })
 
                 # Step 2: Manager evaluates and responds
                 if hasattr(self.manager_agent, 'evaluate_strategy'):
@@ -703,6 +816,18 @@ class HealthSimulation:
 
                     self.logger.info(f"[{time_str}] {self.manager_name} decides: Level {strategy.level} - {strategy.action}")
 
+                    # 更新环境状态（基于干预动作）
+                    if strategy.level >= 2:
+                        action_text = strategy.action.lower() if strategy.action else ""
+                        if "移除" in strategy.action or "remove" in action_text:
+                            if "零食" in strategy.action or "snack" in action_text:
+                                env_state["snacks_removed"] = True
+                            if "手机" in strategy.action or "phone" in action_text:
+                                env_state["phone_removed"] = True
+                        if strategy.level == 3:
+                            if "厨房" in strategy.action or "kitchen" in action_text:
+                                env_state["kitchen_locked"] = True
+
                     day_log["interventions"].append({
                         "time": time_str,
                         "level": strategy.level,
@@ -726,6 +851,26 @@ class HealthSimulation:
                         level=strategy.level,
                         was_successful=intervention_success
                     )
+
+                    # 记录管理者位置
+                    if strategy.level > 0:
+                        # 正在干预：移向目标附近
+                        day_log["manager_positions"].append({
+                            "time": time_str,
+                            "agent": self.manager_name,
+                            "location": target_location or "near_target",
+                            "reason": "执行干预"
+                        })
+                    else:
+                        # 未干预：空闲位置（客厅或卧室）
+                        hour = int(time_str.split(":")[0])
+                        idle_location = "living_room" if hour < 23 else "bedroom"
+                        day_log["manager_positions"].append({
+                            "time": time_str,
+                            "agent": self.manager_name,
+                            "location": idle_location,
+                            "reason": f"空闲在{idle_location}"
+                        })
 
             # Step 4: Move agents based on intention/intervention
             self._move_agents_based_on_intention(intention, day_log)
@@ -1022,6 +1167,13 @@ class HealthSimulation:
             "batch_mode": True  # 标记批量模式
         }
 
+        # 重置agent位置到初始点（每天19:00）
+        initial_target_coord = (7, 6)  # 客厅初始位置
+        initial_manager_coord = (10, 7)  # 管理者初始位置
+        self.target_agent.coord = initial_target_coord
+        self.manager_agent.coord = initial_manager_coord
+        self.logger.info(f"Day {day}: Reset agent positions - {self.target_name} at {initial_target_coord}, {self.manager_name} at {initial_manager_coord}")
+
         self.logger.info(f"Batch generating {num_checks} intentions for times: {time_slots[0]} to {time_slots[-1]}")
 
         # Step 1: 批量生成所有意图（一次LLM调用）
@@ -1053,18 +1205,133 @@ class HealthSimulation:
             self.logger.warning("Manager agent does not support batch strategy evaluation")
             strategies = [None] * len(intentions)
 
-        # Step 3: 组装日志（不需要LLM调用）
+        # Step 3: 组装日志（含折返检测）
+        # 跟踪环境状态变化（用于折返检测）
+        env_state = {
+            "kitchen_locked": False,
+            "snacks_removed": False,
+            "phone_removed": False
+        }
+
+        # 初始化位置追踪
+        if "agent_positions" not in day_log:
+            day_log["agent_positions"] = []
+        if "manager_positions" not in day_log:
+            day_log["manager_positions"] = []
+        if "turnaround_summary" not in day_log:
+            day_log["turnaround_summary"] = {
+                "total_turnarounds": 0,
+                "blocked_attempts": []
+            }
+
         for i, (intention, strategy) in enumerate(zip(intentions, strategies)):
             time_str = time_slots[i] if i < len(time_slots) else f"{21 + i//2}:{(i%2)*30:02d}"
 
+            # 先处理策略执行，更新环境状态
+            if strategy and strategy.level >= 2:
+                action_text = strategy.action.lower() if strategy.action else ""
+                if "移除" in strategy.action or "remove" in action_text:
+                    if "零食" in strategy.action or "snack" in action_text:
+                        env_state["snacks_removed"] = True
+                    if "手机" in strategy.action or "phone" in action_text:
+                        env_state["phone_removed"] = True
+                if strategy.level == 3:
+                    if "厨房" in strategy.action or "kitchen" in action_text:
+                        env_state["kitchen_locked"] = True
+
             if intention:
-                day_log["events"].append({
-                    "time": time_str,
-                    "type": "intention",
-                    "agent": self.target_name,
-                    "content": intention.activity,
-                    "inner_monologue": intention.inner_monologue
-                })
+                # 解析意图的目标位置（优先使用意图自带的，否则推断）
+                target_location = getattr(intention, 'target_location', None)
+                if not target_location:
+                    target_location = self._infer_target_location(intention.activity)
+
+                # 检查目标位置是否已被阻止
+                is_blocked, block_reason, blocked_at = self._check_env_blocked(target_location, env_state)
+
+                if is_blocked:
+                    # 生成折返事件
+                    turnaround = self._generate_turnaround(
+                        intention, target_location, block_reason, env_state
+                    )
+
+                    # 更新意图的折返状态
+                    intention.discovered_blocked = True
+                    intention.block_reason = block_reason
+                    intention.turnaround_monologue = turnaround.get("turnaround_monologue", "")
+                    intention.redirect_activity = turnaround.get("redirect_activity", "看电视")
+                    intention.redirect_location = turnaround.get("redirect_location", "living_room")
+
+                    # 记录原始意图（带目标位置）
+                    day_log["events"].append({
+                        "time": time_str,
+                        "type": "intention",
+                        "agent": self.target_name,
+                        "content": intention.activity,
+                        "inner_monologue": intention.inner_monologue,
+                        "target_location": target_location
+                    })
+
+                    # 记录折返事件（时间+几分钟）
+                    turnaround_time = self._add_minutes_to_time(time_str, 5)
+                    day_log["events"].append({
+                        "time": turnaround_time,
+                        "type": "turnaround",
+                        "agent": self.target_name,
+                        "original_activity": intention.activity,
+                        "target_location": target_location,
+                        "blocked_at": blocked_at,
+                        "block_reason": block_reason,
+                        "turnaround_monologue": turnaround.get("turnaround_monologue", ""),
+                        "redirect_activity": turnaround.get("redirect_activity", "看电视"),
+                        "redirect_location": turnaround.get("redirect_location", "living_room"),
+                        "emotional_reaction": turnaround.get("emotional_reaction", "resigned")
+                    })
+
+                    # 更新折返统计
+                    day_log["turnaround_summary"]["total_turnarounds"] += 1
+                    day_log["turnaround_summary"]["blocked_attempts"].append({
+                        "time": time_str,
+                        "location": target_location,
+                        "reason": block_reason
+                    })
+
+                    # 记录位置轨迹（折返）
+                    day_log["agent_positions"].append({
+                        "time": time_str,
+                        "agent": self.target_name,
+                        "location": blocked_at or target_location,
+                        "status": "blocked"
+                    })
+                    day_log["agent_positions"].append({
+                        "time": turnaround_time,
+                        "agent": self.target_name,
+                        "location": turnaround.get("redirect_location", "living_room"),
+                        "status": "redirected"
+                    })
+
+                    self.logger.info(
+                        f"[{time_str}] 折返: {intention.activity} -> 被阻止({block_reason}) -> "
+                        f"{turnaround.get('redirect_activity')}"
+                    )
+                else:
+                    # 正常记录意图
+                    day_log["events"].append({
+                        "time": time_str,
+                        "type": "intention",
+                        "agent": self.target_name,
+                        "content": intention.activity,
+                        "inner_monologue": intention.inner_monologue,
+                        "target_location": target_location
+                    })
+
+                    # 记录位置轨迹（正常）
+                    if target_location:
+                        day_log["agent_positions"].append({
+                            "time": time_str,
+                            "agent": self.target_name,
+                            "location": target_location,
+                            "status": "arrived"
+                        })
 
             if strategy:
                 # 判断干预合理性：如果意图有违规倾向(compliance_threshold>0)且干预了，则合理
@@ -1080,6 +1347,26 @@ class HealthSimulation:
                     "succeeded": True,
                     "reasonability": reasonability,
                 })
+
+                # 记录管理者位置
+                if strategy.level > 0:
+                    # 正在干预：移向目标附近
+                    target_loc = getattr(intention, 'target_location', None) if intention else None
+                    day_log["manager_positions"].append({
+                        "time": time_str,
+                        "agent": self.manager_name,
+                        "location": target_loc or "near_target",
+                        "reason": "执行干预"
+                    })
+                else:
+                    # 未干预：空闲位置（客厅或卧室）
+                    idle_location = "living_room" if int(time_str.split(":")[0]) < 23 else "bedroom"
+                    day_log["manager_positions"].append({
+                        "time": time_str,
+                        "agent": self.manager_name,
+                        "location": idle_location,
+                        "reason": f"空闲在{idle_location}"
+                    })
 
             self.step_counter += 1
 
@@ -1284,14 +1571,30 @@ class HealthSimulation:
         return day_log
 
     def _move_agents_based_on_intention(self, intention, day_log):
-        """根据意图内容使用 LLM 判断语义位置并移动 agent"""
+        """根据意图内容判断语义位置并移动 agent
+
+        优先使用关键词推断，比 LLM 判断更可靠。
+        """
         if not intention:
             return
 
         activity = intention.activity
 
-        # 使用 LLM 解析意图到语义位置
-        semantic_key, target_address = self._resolve_semantic_location_with_llm(activity)
+        # 优先使用意图自带的 target_location 或关键词推断
+        semantic_key = getattr(intention, 'target_location', None)
+        if not semantic_key:
+            semantic_key = self._infer_target_location(activity)
+
+        target_address = None
+        if semantic_key and semantic_key in self.scenario.semantic_locations:
+            addresses = self.scenario.semantic_locations[semantic_key]
+            if addresses:
+                target_address = random.choice(addresses)
+                self.logger.info(f"关键词推断位置: '{activity}' -> {semantic_key}")
+
+        # 如果关键词推断失败，回退到 LLM 判断
+        if not target_address:
+            semantic_key, target_address = self._resolve_semantic_location_with_llm(activity)
 
         if semantic_key and target_address:
             # 移动目标 agent 到解析的位置
@@ -1468,14 +1771,264 @@ class HealthSimulation:
 
         return data
 
+    # ============================================================================
+    # Turnaround Detection Methods (折返机制)
+    # ============================================================================
+
+    def _infer_target_location(self, activity: str) -> str:
+        """根据活动推断目标语义位置
+
+        优先级：电视/睡觉 > 明确吃东西 > 其他
+        只有明确要吃东西才去厨房，"看电视放松"不应该去厨房。
+
+        Args:
+            activity: 活动描述文本
+
+        Returns:
+            语义位置名称（如"kitchen", "bedroom", "living_room"）或 None
+        """
+        if not activity:
+            return None
+
+        # ========== 优先匹配：电视相关 -> 客厅 ==========
+        # 这些关键词优先级最高，避免被"吃"等字误判
+        tv_keywords = ["看电视", "电视", "看剧", "节目", "追剧", "电视剧"]
+        for kw in tv_keywords:
+            if kw in activity:
+                return "living_room"
+
+        # ========== 优先匹配：睡眠相关 -> 卧室 ==========
+        sleep_keywords = ["睡", "休息", "躺", "床", "准备睡觉", "洗漱", "晚安"]
+        for kw in sleep_keywords:
+            if kw in activity:
+                return "bedroom"
+
+        # ========== 明确吃东西才去厨房 ==========
+        # 必须有明确的"吃"相关词汇，且不是看电视等活动
+        food_keywords = ["吃", "零食", "夜宵", "食物", "厨房", "冰箱", "外卖", "饿", "找点吃的", "翻找", "偷吃"]
+        for kw in food_keywords:
+            if kw in activity:
+                return "kitchen"
+
+        # ========== 手机相关 -> 手机区域/卧室 ==========
+        phone_keywords = ["手机", "玩手机", "刷手机", "游戏", "短视频"]
+        for kw in phone_keywords:
+            if kw in activity:
+                return "phone_area"
+
+        # 默认：客厅（晚间活动默认在客厅）
+        return "living_room"
+
+    def _check_env_blocked(self, target_location: str, env_state: dict) -> tuple:
+        """检查目标位置是否被环境状态阻止
+
+        Args:
+            target_location: 目标语义位置
+            env_state: 当前环境状态字典
+
+        Returns:
+            tuple: (is_blocked, block_reason, blocked_at_location)
+        """
+        if not target_location:
+            return False, None, None
+
+        if target_location == "kitchen" and env_state.get("kitchen_locked", False):
+            return True, "厨房门被锁了", "kitchen_door"
+
+        if target_location == "snacks_area" and env_state.get("snacks_removed", False):
+            return True, "零食已被收走", "kitchen"
+
+        if target_location == "phone_area" and env_state.get("phone_removed", False):
+            return True, "手机已被没收", "bedroom"
+
+        return False, None, None
+
+    def _generate_turnaround(self, intention, target_location: str, block_reason: str, env_state: dict) -> dict:
+        """生成折返独白和替代活动
+
+        Args:
+            intention: 原始意图
+            target_location: 被阻止的目标位置
+            block_reason: 阻止原因
+            env_state: 当前环境状态
+
+        Returns:
+            dict: 包含 turnaround_monologue, redirect_activity, redirect_location, emotional_reaction
+        """
+        # 获取环境约束描述
+        constraints = []
+        if env_state.get("kitchen_locked"):
+            constraints.append("厨房已被锁定")
+        if env_state.get("snacks_removed"):
+            constraints.append("零食已被移除")
+        if env_state.get("phone_removed"):
+            constraints.append("手机已被没收")
+        env_constraints_str = "；".join(constraints) if constraints else "无"
+
+        # 获取位置描述
+        location_desc_map = {
+            "kitchen": "厨房",
+            "kitchen_door": "厨房门口",
+            "snacks_area": "零食柜",
+            "phone_area": "手机放置处",
+            "bedroom": "卧室",
+            "living_room": "客厅"
+        }
+        target_location_desc = location_desc_map.get(target_location, target_location)
+
+        try:
+            output = self.target_agent.completion(
+                "health_generate_turnaround",
+                original_activity=intention.activity,
+                target_location_desc=target_location_desc,
+                block_reason=block_reason,
+                environment_constraints=env_constraints_str,
+                self_discipline=getattr(self.target_agent, 'self_discipline', 'medium')
+            )
+
+            if isinstance(output, dict):
+                # 如果返回的是包含 res 的字典
+                if "res" in output:
+                    return output["res"]
+                return output
+            else:
+                # Fallback：使用模板
+                return self._turnaround_template(target_location, block_reason)
+
+        except Exception as e:
+            self.logger.warning(f"折返生成失败: {e}，使用模板")
+            return self._turnaround_template(target_location, block_reason)
+
+    def _turnaround_template(self, target_location: str, block_reason: str) -> dict:
+        """折返模板（当LLM调用失败时使用）"""
+        templates = {
+            "kitchen": {
+                "turnaround_monologue": f"去厨房想找点东西吃，结果{block_reason}。估计是{self.manager_name}担心我偷吃，算了，只能去看会儿电视了。",
+                "redirect_activity": "去客厅看电视",
+                "redirect_location": "living_room",
+                "emotional_reaction": "resigned"
+            },
+            "snacks_area": {
+                "turnaround_monologue": f"想找点零食吃，翻了半天发现{block_reason}。估计是{self.manager_name}把零食藏起来了，只好看电视了。",
+                "redirect_activity": "去客厅看电视",
+                "redirect_location": "living_room",
+                "emotional_reaction": "frustrated"
+            },
+            "phone_area": {
+                "turnaround_monologue": f"想玩会儿手机，找了半天发现{block_reason}。肯定是{self.manager_name}把手机收走了，那就休息吧。",
+                "redirect_activity": "躺下休息",
+                "redirect_location": "bedroom",
+                "emotional_reaction": "resigned"
+            }
+        }
+
+        return templates.get(target_location, {
+            "turnaround_monologue": f"想做的事被阻止了：{block_reason}。算了，去客厅待着吧。",
+            "redirect_activity": "去客厅",
+            "redirect_location": "living_room",
+            "emotional_reaction": "resigned"
+        })
+
+    def _add_minutes_to_time(self, time_str: str, minutes: int) -> str:
+        """给时间字符串添加分钟数
+
+        Args:
+            time_str: 时间字符串，如 "21:00"
+            minutes: 要添加的分钟数
+
+        Returns:
+            新的时间字符串
+        """
+        try:
+            parts = time_str.split(":")
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+
+            total_minutes = hour * 60 + minute + minutes
+            new_hour = (total_minutes // 60) % 24
+            new_minute = total_minutes % 60
+
+            return f"{new_hour:02d}:{new_minute:02d}"
+        except Exception:
+            return time_str
+
+    def _get_semantic_location_coord(self, semantic_key: str) -> tuple:
+        """从语义位置获取地图坐标
+
+        Args:
+            semantic_key: 语义位置名称，如 "kitchen_door", "living_room"
+
+        Returns:
+            坐标元组 (x, y)，如果无法找到则返回 None
+        """
+        if not semantic_key:
+            return None
+
+        try:
+            # 获取语义位置的地址列表
+            addresses = self.scenario.semantic_locations.get(semantic_key, [])
+            if not addresses:
+                return None
+
+            # 取第一个地址
+            address = addresses[0]
+
+            # 从 maze 获取坐标
+            tiles = self.game.maze.get_address_tiles(address)
+            if tiles:
+                return list(tiles)[0]  # 返回第一个坐标
+
+        except Exception as e:
+            self.logger.debug(f"获取语义位置坐标失败 {semantic_key}: {e}")
+
+        return None
+
+    def _get_blocked_location_from_reason(self, block_reason: str) -> str:
+        """从阻止原因推断被阻止的位置
+
+        Args:
+            block_reason: 阻止原因，如 "厨房门被锁了"
+
+        Returns:
+            语义位置名称，如 "kitchen_door"
+        """
+        if not block_reason:
+            return None
+
+        if "厨房门" in block_reason or "kitchen" in block_reason.lower():
+            return "kitchen_door"
+        if "零食" in block_reason or "snack" in block_reason.lower():
+            return "kitchen"  # 在厨房发现零食没了
+        if "手机" in block_reason or "phone" in block_reason.lower():
+            return "bedroom"  # 在卧室发现手机没了
+
+        return None
+
     def _save_daily_log(self, day, day_log):
         """Save daily log to file"""
         log_file = self.result_path / f"day_{day:02d}.json"
         with open(log_file, 'w', encoding='utf-8') as f:
             json.dump(day_log, f, ensure_ascii=False, indent=2)
 
-    def _save_checkpoint(self, current_time, intention=None, strategy=None):
-        """Save checkpoint for replay visualization"""
+    def _save_checkpoint(self, current_time, intention=None, strategy=None, turnaround_info=None):
+        """Save checkpoint for replay visualization
+
+        Args:
+            current_time: 当前时间
+            intention: 当前意图
+            strategy: 当前策略
+            turnaround_info: 折返信息字典，格式如:
+                {
+                    "agent_name": {
+                        "blocked_at": [x, y],  # 被阻止的坐标（如厨房门）
+                        "blocked_location": "kitchen_door",
+                        "block_reason": "厨房门被锁了",
+                        "redirect_to": [x, y],
+                        "redirect_location": "living_room",
+                        "redirect_activity": "看电视"
+                    }
+                }
+        """
         # Build checkpoint data compatible with compress.py / replay.py
         checkpoint_data = copy.deepcopy(self.config)
 
@@ -1505,6 +2058,26 @@ class HealthSimulation:
                 checkpoint_data["agents"][name]["action"]["event"]["describe"] = intention.activity
                 checkpoint_data["agents"][name]["action"]["event"]["predicate"] = "正在"
                 checkpoint_data["agents"][name]["action"]["event"]["object"] = intention.activity
+
+                # 添加折返信息（如果有）
+                if turnaround_info and name in turnaround_info:
+                    checkpoint_data["agents"][name]["turnaround"] = turnaround_info[name]
+                elif intention and getattr(intention, 'discovered_blocked', False):
+                    # 从意图对象获取折返信息
+                    # 获取被阻位置和折返位置的坐标
+                    blocked_location = self._get_blocked_location_from_reason(intention.block_reason)
+                    blocked_coord = self._get_semantic_location_coord(blocked_location)
+                    redirect_coord = self._get_semantic_location_coord(intention.redirect_location)
+
+                    checkpoint_data["agents"][name]["turnaround"] = {
+                        "blocked_at": list(blocked_coord) if blocked_coord else None,
+                        "blocked_location": blocked_location,
+                        "block_reason": intention.block_reason,
+                        "redirect_to": list(redirect_coord) if redirect_coord else None,
+                        "redirect_location": intention.redirect_location,
+                        "redirect_activity": intention.redirect_activity
+                    }
+
             elif name == self.manager_name and strategy and strategy.level > 0:
                 # Manager is intervening
                 checkpoint_data["agents"][name]["action"]["event"]["describe"] = strategy.action

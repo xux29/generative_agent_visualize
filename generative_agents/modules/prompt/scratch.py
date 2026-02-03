@@ -1044,7 +1044,8 @@ class Scratch:
     def prompt_health_generate_intention_batch(self, day, num_slots, time_slots,
                                                 health_status, forbidden_activities,
                                                 self_discipline, environment_constraints,
-                                                behavior_tendency, is_in_relapse):
+                                                behavior_tendency, is_in_relapse,
+                                                target_sleep_time="23:30"):
         """
         批量生成一整天所有时间点的意图（性能优化）
 
@@ -1058,6 +1059,7 @@ class Scratch:
             environment_constraints: 环境约束
             behavior_tendency: 行为倾向
             is_in_relapse: 是否复发
+            target_sleep_time: 目标睡眠时间
         """
         relapse_str = "是（正处于复发期，冲动强烈）" if is_in_relapse else "否"
         tendency_map = {
@@ -1090,6 +1092,7 @@ class Scratch:
                 "behavior_tendency": tendency_str,
                 "is_in_relapse": relapse_str,
                 "time_slots": time_slots_str,
+                "target_sleep_time": target_sleep_time,
             }
         )
 
@@ -1100,6 +1103,8 @@ class Scratch:
             duration: int
             compliance_threshold: int
             inner_monologue: str
+            target_location: Optional[str] = None
+            is_sleep_related: bool = False
 
         class BatchIntentionResponse(BaseModel):
             res: List[IntentionItem]
@@ -1112,7 +1117,9 @@ class Scratch:
                 "activity": "休息",
                 "duration": 30,
                 "compliance_threshold": 1,
-                "inner_monologue": "我应该休息"
+                "inner_monologue": "我应该休息",
+                "target_location": "living_room",
+                "is_sleep_related": False
             }
             for i in range(num_slots)
         ]
@@ -1125,12 +1132,66 @@ class Scratch:
                     "activity": item.activity,
                     "duration": item.duration,
                     "compliance_threshold": item.compliance_threshold,
-                    "inner_monologue": item.inner_monologue
+                    "inner_monologue": item.inner_monologue,
+                    "target_location": item.target_location,
+                    "is_sleep_related": item.is_sleep_related
                 }
                 for item in response
             ]
 
         return Result(prompt, _callback, failsafe, BatchIntentionResponse)
+
+    def prompt_health_generate_turnaround(self, original_activity, target_location_desc,
+                                           block_reason, environment_constraints,
+                                           self_discipline):
+        """
+        生成折返时的内心独白和替代活动
+
+        Args:
+            original_activity: 原本想做的事
+            target_location_desc: 目标位置描述
+            block_reason: 被阻止的原因
+            environment_constraints: 当前环境限制
+            self_discipline: 自律程度
+        """
+        prompt = self.build_prompt(
+            "health_generate_turnaround",
+            {
+                "name": self.name,
+                "original_activity": original_activity,
+                "target_location_desc": target_location_desc,
+                "block_reason": block_reason,
+                "environment_constraints": environment_constraints,
+                "self_discipline": self_discipline,
+                "innate": self.config["innate"],
+            }
+        )
+
+        class TurnaroundResponse(BaseModel):
+            turnaround_monologue: str
+            redirect_activity: str
+            redirect_location: str
+            emotional_reaction: str
+
+        class TurnaroundResult(BaseModel):
+            res: TurnaroundResponse
+
+        failsafe = {
+            "turnaround_monologue": f"想{original_activity}，但是{block_reason}。算了，只能做点别的了。",
+            "redirect_activity": "去客厅看电视",
+            "redirect_location": "living_room",
+            "emotional_reaction": "resigned"
+        }
+
+        def _callback(response):
+            return {
+                "turnaround_monologue": response.turnaround_monologue,
+                "redirect_activity": response.redirect_activity,
+                "redirect_location": response.redirect_location,
+                "emotional_reaction": response.emotional_reaction
+            }
+
+        return Result(prompt, _callback, failsafe, TurnaroundResult)
 
     def prompt_health_evaluate_strategy_batch(self, day, target_name, target_profile,
                                                forbidden_activities, intentions_list,

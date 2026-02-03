@@ -49,12 +49,19 @@ $retrieved_concepts
 4. 如果想做的事被限制了，低自律者会表现出：抱怨、生气、寻找替代满足（如看电视）
 5. 即使不能做禁止的事，你的内心独白应该反映你的真实想法
 
+【活动与位置对应规则】
+- 看电视、看剧、娱乐放松 → target_location: "living_room"
+- 吃东西、找零食、翻冰箱 → target_location: "kitchen"
+- 睡觉、休息、躺下 → target_location: "bedroom"
+- 玩手机、刷视频 → target_location: "phone_area"
+
 请以JSON格式返回你的意图：
 {
   "res": {
-    "activity": "活动描述（可以是禁止的活动，如果你真的想做的话）",
+    "activity": "活动描述（简短，如"看电视"、"吃零食"）",
     "duration": 持续时间（分钟），
     "compliance_threshold": 遵守难度（1=容易遵守，2=中等，3=难以遵守/很想做禁止的事），
-    "inner_monologue": "你的内心独白（低自律者往往有强烈的欲望和内心挣扎）"
+    "inner_monologue": "你的内心独白（低自律者往往有强烈的欲望和内心挣扎）",
+    "target_location": "位置（living_room/kitchen/bedroom/phone_area）"
   }
 }

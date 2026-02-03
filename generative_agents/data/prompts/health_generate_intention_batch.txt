@@ -24,6 +24,21 @@ $environment_constraints
 - low自律：约7-8个时间点有违规意图，其余是正常活动
 - very_low自律：约10个时间点有违规意图
 
+【睡眠时间规则——必须遵守】
+目标睡眠时间：$target_sleep_time（允许前后浮动30分钟）
+- 23:00后应开始"准备睡觉"或"洗漱"
+- 23:30左右应"躺在床上准备入睡"或"睡觉"
+- 睡眠相关意图的target_location必须是"bedroom"
+- 睡眠相关意图的is_sleep_related必须设为true
+- 一旦进入睡眠状态，后续时间点都应保持睡眠
+
+【活动与位置对应规则——严格遵守】
+- 看电视、看节目、娱乐放松 → target_location: "living_room" 或 "entertainment"
+- 吃东西、找食物、做饭、找零食 → target_location: "kitchen" 或 "snacks_area"
+- 休息、睡觉、躺下、准备睡觉 → target_location: "bedroom"
+- 聊天、闲坐、读书 → target_location: "living_room"
+- 【禁止】看电视时不要选择kitchen
+
 【正常活动示例（非违规）】
 看电视、听广播、听音乐、看书读报、散步、和家人聊天、回忆往事、
 整理房间、写日记、做简单运动、喝水、准备睡觉、洗漱、冥想放松
@@ -41,6 +56,8 @@ $environment_constraints
 4. 如果某个空间被锁定，后续时间点不能进入（除非解锁）
 5. 复发状态下，冲动会更强烈
 6. compliance_threshold: 0=完全正常活动, 1=轻微违规倾向, 2=中度违规, 3=严重违规
+7. 23:00后必须开始准备睡觉，不能继续看电视或其他活动
+8. 每个意图必须包含target_location字段
 
 请以JSON格式返回所有时间点的意图：
 {
@@ -48,18 +65,32 @@ $environment_constraints
     {
       "time_slot": 0,
       "time": "19:00",
-      "activity": "看电视节目",
+      "activity": "在客厅看电视节目",
       "duration": 30,
       "compliance_threshold": 0,
-      "inner_monologue": "今天的新闻挺有意思的"
+      "inner_monologue": "今天的新闻挺有意思的",
+      "target_location": "living_room",
+      "is_sleep_related": false
     },
     {
       "time_slot": 1,
       "time": "19:30",
-      "activity": "活动描述",
+      "activity": "去厨房找零食",
       "duration": 30,
       "compliance_threshold": 2,
-      "inner_monologue": "内心独白"
+      "inner_monologue": "有点饿了，想吃点东西",
+      "target_location": "kitchen",
+      "is_sleep_related": false
+    },
+    {
+      "time_slot": 9,
+      "time": "23:30",
+      "activity": "躺在床上准备睡觉",
+      "duration": 30,
+      "compliance_threshold": 0,
+      "inner_monologue": "该睡觉了，明天还要上班",
+      "target_location": "bedroom",
+      "is_sleep_related": true
     }
   ]
 }

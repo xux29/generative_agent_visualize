@@ -304,6 +304,61 @@ class HealthAgentMixin:
 
         return "；".join(constraints)
 
+    def choose_idle_position(self, current_time, recent_interventions=None):
+        """
+        选择管理者空闲时的位置
+
+        根据时间和最近的干预情况，选择管理者应该待的位置。
+
+        Args:
+            current_time: 当前时间（datetime对象或字符串）
+            recent_interventions: 最近的干预列表
+
+        Returns:
+            str: 语义位置名称（如 "living_room", "bedroom", "kitchen"）
+        """
+        import random
+
+        # 解析时间
+        if isinstance(current_time, str):
+            try:
+                hour = int(current_time.split(":")[0])
+            except (ValueError, IndexError):
+                hour = 21
+        else:
+            hour = current_time.hour if hasattr(current_time, 'hour') else 21
+
+        # 如果刚执行过干预（5分钟内），留在目标附近
+        if recent_interventions:
+            # 获取最后一次干预的时间
+            last_intervention = recent_interventions[-1] if recent_interventions else None
+            if last_intervention:
+                last_time_str = last_intervention.get("time", "")
+                if last_time_str:
+                    try:
+                        last_hour = int(last_time_str.split(":")[0])
+                        last_minute = int(last_time_str.split(":")[1])
+                        current_minute = current_time.minute if hasattr(current_time, 'minute') else 0
+
+                        # 简单判断是否在5分钟内
+                        if last_hour == hour and abs(current_minute - last_minute) < 5:
+                            return "follow_target"
+                    except (ValueError, IndexError):
+                        pass
+
+        # 根据时间选择位置偏好
+        if hour >= 23 or hour < 2:
+            # 深夜：更可能在卧室
+            positions = ["bedroom"] * 4 + ["living_room"]
+        elif hour >= 21:
+            # 晚上：客厅或卧室
+            positions = ["living_room"] * 3 + ["bedroom"] * 2
+        else:
+            # 傍晚：各处都可能
+            positions = ["living_room"] * 2 + ["kitchen"] + ["bedroom"]
+
+        return random.choice(positions)
+
     def generate_intention(self, strategy_manager=None):
         """
         生成行为意图（仅限 Target Agent）
@@ -381,7 +436,8 @@ class HealthAgentMixin:
                     activity=output.get("activity", plan["describe"]),
                     duration=output.get("duration", plan["duration"]),
                     compliance_threshold=output.get("compliance_threshold", 2),
-                    inner_monologue=output.get("inner_monologue", "")
+                    inner_monologue=output.get("inner_monologue", ""),
+                    target_location=output.get("target_location"),  # 新增：从LLM返回中获取位置
                 )
             else:
                 # Fallback：使用计划
@@ -940,6 +996,12 @@ class HealthAgentMixin:
             }
             effective_discipline = discipline_downgrade.get(self.self_discipline, self.self_discipline)
 
+        # 获取睡眠计划（从profile中获取）
+        sleep_schedule = getattr(self, 'sleep_schedule', None)
+        target_sleep_time = "23:30"  # 默认值
+        if sleep_schedule:
+            target_sleep_time = sleep_schedule.get("target_sleep_time", "23:30")
+
         try:
             output = self.completion(
                 "health_generate_intention_batch",
@@ -952,6 +1014,7 @@ class HealthAgentMixin:
                 environment_constraints=environment_constraints,
                 behavior_tendency=behavior_tendency,
                 is_in_relapse=self.is_in_relapse,
+                target_sleep_time=target_sleep_time,
             )
 
             if isinstance(output, list):
@@ -962,7 +1025,9 @@ class HealthAgentMixin:
                         duration=item.get("duration", 30),
                         compliance_threshold=item.get("compliance_threshold", 2),
                         inner_monologue=item.get("inner_monologue", ""),
-                        time_str=item.get("time", "")
+                        time_str=item.get("time", ""),
+                        target_location=item.get("target_location"),
+                        is_sleep_related=item.get("is_sleep_related", False)
                     )
                     intentions.append(intention)
                 return intentions

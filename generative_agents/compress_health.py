@@ -293,64 +293,157 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
                 # Get health data for this agent
                 agent_health_data = agent_data.get("health_data", {})
 
-                for i in range(frames_per_step):
-                    moving = len(path) > 1
-                    if len(path) > 0:
-                        movement = list(path[0])
-                        path = path[1:]
+                # 检查是否有折返信息
+                turnaround = agent_data.get("turnaround")
+
+                if turnaround:
+                    # 有折返：生成三段移动
+                    blocked_location = turnaround.get("blocked_location", "kitchen_door")
+                    redirect_location = turnaround.get("redirect_location", "living_room")
+                    block_reason = turnaround.get("block_reason", "被阻止")
+                    redirect_activity = turnaround.get("redirect_activity", "看电视")
+
+                    # 获取被阻位置坐标（从semantic_locations获取）
+                    blocked_coord = turnaround.get("blocked_at")
+                    if not blocked_coord:
+                        # 尝试从地图获取
+                        blocked_coord = target_coord  # fallback
+
+                    redirect_coord = turnaround.get("redirect_to")
+                    if not redirect_coord:
+                        redirect_coord = source_coord  # fallback到起始位置
+
+                    # 确保坐标是元组
+                    if isinstance(blocked_coord, list):
+                        blocked_coord = tuple(blocked_coord)
+                    if isinstance(redirect_coord, list):
+                        redirect_coord = tuple(redirect_coord)
+
+                    # 生成三段路径
+                    try:
+                        path1 = maze.find_path(source_coord, blocked_coord) if source_coord != blocked_coord else [source_coord]
+                        path2 = maze.find_path(blocked_coord, redirect_coord) if blocked_coord != redirect_coord else [blocked_coord]
+                    except Exception as e:
+                        print(f"    {agent_name}: turnaround path error: {e}, using direct path")
+                        path1 = [source_coord, blocked_coord]
+                        path2 = [blocked_coord, redirect_coord]
+
+                    # 帧分配：前往25帧 + 被阻5帧 + 折返30帧
+                    frames_going = 25
+                    frames_blocked = 5
+                    frames_returning = frames_per_step - frames_going - frames_blocked
+
+                    for i in range(frames_per_step):
+                        if i < frames_going:
+                            # 前往阶段
+                            if len(path1) > 0:
+                                movement = list(path1[0])
+                                if len(path1) > 1:
+                                    path1 = path1[1:]
+                            else:
+                                movement = list(blocked_coord)
+                            action = f"前往 {location}"
+                            current_location = location
+                        elif i < frames_going + frames_blocked:
+                            # 被阻阶段
+                            movement = list(blocked_coord)
+                            action = f"🚫 {block_reason}"
+                            current_location = blocked_location
+                        else:
+                            # 折返阶段
+                            if len(path2) > 0:
+                                movement = list(path2[0])
+                                if len(path2) > 1:
+                                    path2 = path2[1:]
+                            else:
+                                movement = list(redirect_coord)
+                            action = f"↩️ {redirect_activity}"
+                            current_location = redirect_location
+
                         if agent_name not in last_location:
                             last_location[agent_name] = {}
                         last_location[agent_name]["movement"] = movement
-                        last_location[agent_name]["location"] = location
-                    else:
-                        movement = None
+                        last_location[agent_name]["location"] = current_location
 
-                    if moving:
-                        action = f"前往 {location}"
-                    elif movement is not None:
-                        action = agent_data["action"]["event"]["describe"]
-                        if len(action) < 1:
-                            action = f'{agent_data["action"]["event"]["predicate"]}{agent_data["action"]["event"]["object"]}'
+                        step_key = "%d" % ((step - 1) * frames_per_step + 1 + i)
+                        if step_key not in all_movement:
+                            all_movement[step_key] = {}
 
-                        for persons in persons_in_conversation:
-                            if agent_name in persons:
-                                had_conversation = True
-                                break
-
-                        if "睡觉" in action:
-                            action = "😴 " + action
-                        elif had_conversation:
-                            action = "💬 " + action
-
-                    step_key = "%d" % ((step - 1) * frames_per_step + 1 + i)
-                    if step_key not in all_movement:
-                        all_movement[step_key] = {}
-
-                    if movement is not None:
                         movement_data = {
-                            "location": location,
+                            "location": current_location,
                             "movement": movement,
                             "action": action,
+                            "health_score": current_health_score,
+                            "health_zone": current_health_zone,
+                            "day": current_day,
+                            "tide_phase": current_tide_phase,
+                            "intervention_level": current_intervention_level,
+                            "intervention_action": current_intervention_action,
+                            "is_turnaround": True,
+                            "turnaround_phase": "going" if i < frames_going else ("blocked" if i < frames_going + frames_blocked else "returning")
                         }
-
-                        # Add health data for all agents (but especially for target)
-                        if agent_health_data:
-                            movement_data["health_score"] = agent_health_data.get("score", current_health_score)
-                            movement_data["health_zone"] = agent_health_data.get("zone", current_health_zone)
-                            movement_data["day"] = agent_health_data.get("day", current_day)
-                            movement_data["tide_phase"] = agent_health_data.get("tide_phase", current_tide_phase)
-                        else:
-                            # Use checkpoint-level health data
-                            movement_data["health_score"] = current_health_score
-                            movement_data["health_zone"] = current_health_zone
-                            movement_data["day"] = current_day
-                            movement_data["tide_phase"] = current_tide_phase
-
-                        # Add intervention data
-                        movement_data["intervention_level"] = current_intervention_level
-                        movement_data["intervention_action"] = current_intervention_action
-
                         all_movement[step_key][agent_name] = movement_data
+
+                else:
+                    # 正常处理（无折返）
+                    for i in range(frames_per_step):
+                        moving = len(path) > 1
+                        if len(path) > 0:
+                            movement = list(path[0])
+                            path = path[1:]
+                            if agent_name not in last_location:
+                                last_location[agent_name] = {}
+                            last_location[agent_name]["movement"] = movement
+                            last_location[agent_name]["location"] = location
+                        else:
+                            movement = None
+
+                        if moving:
+                            action = f"前往 {location}"
+                        elif movement is not None:
+                            action = agent_data["action"]["event"]["describe"]
+                            if len(action) < 1:
+                                action = f'{agent_data["action"]["event"]["predicate"]}{agent_data["action"]["event"]["object"]}'
+
+                            for persons in persons_in_conversation:
+                                if agent_name in persons:
+                                    had_conversation = True
+                                    break
+
+                            if "睡觉" in action:
+                                action = "😴 " + action
+                            elif had_conversation:
+                                action = "💬 " + action
+
+                        step_key = "%d" % ((step - 1) * frames_per_step + 1 + i)
+                        if step_key not in all_movement:
+                            all_movement[step_key] = {}
+
+                        if movement is not None:
+                            movement_data = {
+                                "location": location,
+                                "movement": movement,
+                                "action": action,
+                            }
+
+                            # Add health data for all agents (but especially for target)
+                            if agent_health_data:
+                                movement_data["health_score"] = agent_health_data.get("score", current_health_score)
+                                movement_data["health_zone"] = agent_health_data.get("zone", current_health_zone)
+                                movement_data["day"] = agent_health_data.get("day", current_day)
+                                movement_data["tide_phase"] = agent_health_data.get("tide_phase", current_tide_phase)
+                            else:
+                                # Use checkpoint-level health data
+                                movement_data["health_score"] = current_health_score
+                                movement_data["health_zone"] = current_health_zone
+                                movement_data["day"] = current_day
+                                movement_data["tide_phase"] = current_tide_phase
+
+                            # Add intervention data
+                            movement_data["intervention_level"] = current_intervention_level
+                            movement_data["intervention_action"] = current_intervention_action
+
+                            all_movement[step_key][agent_name] = movement_data
 
                 all_movement["conversation"][step_time] = step_conversation
 
