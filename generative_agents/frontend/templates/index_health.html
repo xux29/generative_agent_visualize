@@ -168,6 +168,14 @@
         display: flex;
         gap: 10px;
         align-items: flex-start;
+        cursor: pointer;
+        padding: 6px;
+        border-radius: 8px;
+        transition: background 0.2s ease;
+    }
+
+    .agent-row:hover {
+        background: rgba(0, 0, 0, 0.04);
     }
 
     .agent-avatar {
@@ -193,11 +201,79 @@
         font-size: 13px;
     }
 
+    .agent-role {
+        font-size: 12px;
+        color: #666;
+        margin-top: 2px;
+    }
+
+    .agent-location {
+        font-size: 12px;
+        color: #555;
+        margin-top: 4px;
+    }
+
     .agent-activity {
         font-size: 12px;
         color: #666;
+        margin-top: 2px;
     }
 
+    .satisfaction-display {
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px dashed #e2e2e2;
+    }
+
+    .satisfaction-title {
+        font-size: 12px;
+        color: #666;
+        margin-bottom: 6px;
+        text-align: center;
+    }
+
+    .satisfaction-value {
+        text-align: center;
+        font-size: 28px;
+        font-weight: bold;
+        color: #0f766e;
+    }
+
+    .agent-profile {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .agent-profile-name {
+        font-weight: 700;
+        font-size: 14px;
+        color: #333;
+    }
+
+    .agent-profile-body {
+        font-size: 12px;
+        color: #555;
+        line-height: 1.6;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .profile-row {
+        display: flex;
+        gap: 8px;
+    }
+
+    .profile-label {
+        min-width: 64px;
+        color: #777;
+    }
+
+    .profile-value {
+        flex: 1;
+        color: #333;
+    }
     /* Sidebar help */
     .sidebar-help {
         position: absolute;
@@ -477,7 +553,7 @@
         <div class="sidebar-section">
             <h4>模拟进度</h4>
             <div class="day-display">
-                <span id="current-day">1</span> / 90
+                <span id="current-day">--</span> / <span id="total-days">--</span>
             </div>
             <div class="day-label" style="text-align: center;">天</div>
         </div>
@@ -493,6 +569,10 @@
             <div class="tide-phase">
                 <span class="tide-icon" id="tide-icon">🌊</span>
                 <span id="tide-phase">正常期</span>
+            </div>
+            <div class="satisfaction-display">
+                <div class="satisfaction-title">满意度</div>
+                <div class="satisfaction-value" id="satisfaction-score">--</div>
             </div>
         </div>
 
@@ -511,17 +591,27 @@
             <h4>角色状态</h4>
             <div class="agent-info">
                 {% for p in persona_names %}
-                <div class="agent-row">
+                <div class="agent-row" data-agent="{{ p }}" role="button" tabindex="0">
                     <div class="agent-avatar">
                         {% set image_static = 'assets/' ~ map_folder ~ '/agents/' ~ p ~ '/portrait.png' %}
                         <img src="{{ url_for('static', filename=image_static) }}">
                     </div>
                     <div class="agent-details">
                         <div class="agent-name">{{ p }}</div>
-                        <div class="agent-activity" id="sidebar-activity-{{ p }}">-</div>
+                        <div class="agent-role" id="sidebar-role-{{ p }}">-</div>
+                        <div class="agent-location" id="sidebar-location-{{ p }}">-</div>
+                        <div class="agent-activity" id="sidebar-action-{{ p }}">-</div>
                     </div>
                 </div>
                 {% endfor %}
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <h4>角色详情</h4>
+            <div class="agent-profile">
+                <div class="agent-profile-name" id="agent-profile-name">-</div>
+                <div class="agent-profile-body" id="agent-profile-body">点击头像查看详细信息</div>
             </div>
         </div>
 

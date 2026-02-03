@@ -24,6 +24,14 @@
     const initial_start_datetime = new Date(start_datetime.getTime());
     const framesPerStep = 60;
     const checkpointTimes = Object.keys(conversation_data).sort();
+    let dayIndexByDate = new Map();
+    let dayByStep = {};
+    let totalDays = 0;
+    let lastKnownHealthScore = null;
+    let lastKnownSatisfactionScore = null;
+    let activeProfileAgent = null;
+    const agentProfiles = {};
+    const agentRoles = {};
 
     // Map folder for dynamic asset loading
     let map_folder = {{ map_folder|default('village')|tojson }};
@@ -98,6 +106,249 @@
         "deep_recovery": { text: "深度恢复期", icon: "☀️" }
     };
 
+    function buildDayIndexMap() {
+        dayIndexByDate = new Map();
+        let nextIndex = 1;
+        checkpointTimes.forEach((timeKey) => {
+            if (!timeKey || typeof timeKey !== "string") return;
+            const datePart = timeKey.split("-")[0];
+            if (!datePart) return;
+            if (!dayIndexByDate.has(datePart)) {
+                dayIndexByDate.set(datePart, nextIndex++);
+            }
+        });
+    }
+
+    function computeTotalDaysFromMovement() {
+        let maxDay = 0;
+        for (const stepKey in all_movement) {
+            if (stepKey === "description" || stepKey === "conversation") continue;
+            const stepData = all_movement[stepKey];
+            if (!stepData) continue;
+            for (const agentName in stepData) {
+                if (agentName === "description" || agentName === "conversation") continue;
+                const numericDay = toNumber(stepData[agentName].day);
+                if (Number.isFinite(numericDay) && numericDay > maxDay) {
+                    maxDay = numericDay;
+                }
+            }
+        }
+        return maxDay;
+    }
+
+    function formatDisciplineLevel(level) {
+        const mapping = {
+            "very_low": "很低",
+            "low": "低",
+            "medium": "中等",
+            "high": "高",
+            "very_high": "很高",
+        };
+        return mapping[level] || level || "";
+    }
+
+    function toNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+    }
+
+    function getDayForFrameStep(frameStep, stepData) {
+        if (!Number.isFinite(frameStep) || frameStep < 1) return null;
+        let dayValue = null;
+        if (stepData) {
+            const numericDay = toNumber(stepData.day);
+            if (Number.isFinite(numericDay) && numericDay > 0) {
+                dayValue = numericDay;
+            }
+        }
+        if (!dayValue) {
+            const timeKey = getTimeKeyForFrameStep(frameStep);
+            if (timeKey) {
+                const datePart = timeKey.split("-")[0];
+                if (dayIndexByDate.has(datePart)) {
+                    dayValue = dayIndexByDate.get(datePart);
+                }
+            }
+        }
+        return dayValue;
+    }
+
+    function updateTotalDaysUI() {
+        const totalEl = document.getElementById("total-days");
+        if (!totalEl) return;
+        if (!totalDays || totalDays < 1) {
+            totalEl.innerText = "--";
+        } else {
+            totalEl.innerText = totalDays;
+        }
+    }
+
+    function extractSatisfactionScore(stepData) {
+        if (!stepData) return null;
+        const candidates = [
+            stepData.satisfaction_score,
+            stepData.emotion_score,
+            stepData.satisfaction
+        ];
+        for (const value of candidates) {
+            const numericValue = toNumber(value);
+            if (Number.isFinite(numericValue)) {
+                return numericValue;
+            }
+        }
+        return null;
+    }
+
+    function formatScore(value) {
+        if (!Number.isFinite(value)) return "--";
+        return value.toFixed(1);
+    }
+
+    function isInterventionAgent(agentData, interventionAction) {
+        if (!agentData) return false;
+        if (!interventionAction) return false;
+        const action = agentData.action || "";
+        return action === interventionAction || action.includes(interventionAction);
+    }
+
+    function getRoleLabel(agentName, agentData, currentLevel, currentAction) {
+        const profileRole = agentProfiles[agentName] ? agentProfiles[agentName].roleLabel : "";
+        let baseRole = agentRoles[agentName] || profileRole || "";
+        if (!baseRole && agentData && agentData.role) {
+            baseRole = agentData.role;
+        }
+        if (!baseRole) {
+            baseRole = "角色";
+        }
+        const levelLabel = Number.isFinite(currentLevel) ? `L${currentLevel + 1}` : "";
+        if (currentLevel > 0 && isInterventionAgent(agentData, currentAction)) {
+            return `${baseRole} · ${levelLabel}`;
+        }
+        return baseRole;
+    }
+
+    function setSidebarText(id, text) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.innerText = text;
+    }
+
+    function truncateText(text, maxLen) {
+        if (!text) return "-";
+        if (text.length <= maxLen) return text;
+        return text.substring(0, maxLen - 3) + "...";
+    }
+
+    function renderAgentProfile(agentName) {
+        const nameEl = document.getElementById("agent-profile-name");
+        const bodyEl = document.getElementById("agent-profile-body");
+        if (!nameEl || !bodyEl) return;
+
+        if (!agentName) {
+            nameEl.innerText = "-";
+            bodyEl.innerText = "点击头像查看详细信息";
+            return;
+        }
+
+        activeProfileAgent = agentName;
+        nameEl.innerText = agentName;
+
+        const profile = agentProfiles[agentName] || {};
+        const rows = [];
+
+        if (profile.roleLabel) rows.push(["角色", profile.roleLabel]);
+        if (profile.lifestyle) rows.push(["生活方式", profile.lifestyle]);
+        if (profile.selfDiscipline) rows.push(["自律等级", profile.selfDiscipline]);
+        if (profile.personality) rows.push(["性格", profile.personality]);
+        if (profile.background) rows.push(["背景", profile.background]);
+        if (profile.healthCondition) rows.push(["健康状况", profile.healthCondition]);
+        if (profile.forbiddenActivities) rows.push(["禁忌", profile.forbiddenActivities]);
+        if (profile.motivation) rows.push(["动机", profile.motivation]);
+        if (profile.strategyPreference) rows.push(["管理风格", profile.strategyPreference]);
+        if (profile.supervisedAgents) rows.push(["监督对象", profile.supervisedAgents]);
+        if (profile.supervisor) rows.push(["监督者", profile.supervisor]);
+        if (profile.dailyPlan) rows.push(["日程", profile.dailyPlan]);
+        if (profile.currently) rows.push(["当前画像", profile.currently]);
+
+        if (!rows.length) {
+            bodyEl.innerText = "暂无详细信息";
+            return;
+        }
+
+        bodyEl.innerHTML = rows.map(([label, value]) => {
+            return `<div class="profile-row"><div class="profile-label">${label}</div><div class="profile-value">${value}</div></div>`;
+        }).join("");
+    }
+
+    function bindAgentProfileClicks() {
+        const rows = document.querySelectorAll(".agent-row");
+        rows.forEach((row) => {
+            row.addEventListener("click", () => {
+                const agentName = row.dataset.agent;
+                renderAgentProfile(agentName);
+            });
+            row.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    const agentName = row.dataset.agent;
+                    renderAgentProfile(agentName);
+                }
+            });
+        });
+    }
+
+    function loadAgentProfiles() {
+        const agentNames = Object.keys(persona_names || {});
+        const requests = agentNames.map((agentName) => {
+            const encoded = encodeURIComponent(agentName);
+            const url = `/static/assets/${map_folder}/agents/${encoded}/agent.json`;
+            return fetch(url)
+                .then((res) => res.ok ? res.json() : null)
+                .then((data) => {
+                    if (!data) return;
+                    const monitor = data.monitor || {};
+                    const scratch = data.scratch || {};
+                    const role = monitor.role || "";
+                    const roleLabel = role === "supervised"
+                        ? "被管理者"
+                        : role === "supervisor"
+                            ? "管理者"
+                            : role === "intervention"
+                                ? "干预者"
+                                : "";
+                    agentRoles[agentName] = roleLabel || agentRoles[agentName];
+
+                    const healthStatus = monitor.health_status || {};
+                    const forbidden = healthStatus.forbidden_activities || healthStatus.forbidden_foods || [];
+                    agentProfiles[agentName] = {
+                        roleLabel,
+                        lifestyle: scratch.lifestyle,
+                        selfDiscipline: formatDisciplineLevel(monitor.self_discipline),
+                        personality: scratch.innate,
+                        background: scratch.learned,
+                        healthCondition: healthStatus.condition,
+                        motivation: scratch.motivation,
+                        strategyPreference: monitor.strategy_preference,
+                        supervisedAgents: Array.isArray(monitor.supervised_agents) ? monitor.supervised_agents.join("、") : "",
+                        supervisor: monitor.supervisor,
+                        dailyPlan: scratch.daily_plan,
+                        currently: data.currently,
+                        forbiddenActivities: Array.isArray(forbidden) ? forbidden.join("、") : ""
+                    };
+                })
+                .catch(() => null);
+        });
+
+        Promise.all(requests).then(() => {
+            if (!activeProfileAgent) {
+                const target = agentNames.find(name => (agentProfiles[name] || {}).roleLabel === "被管理者");
+                renderAgentProfile(target || agentNames[0]);
+            } else {
+                renderAgentProfile(activeProfileAgent);
+            }
+        });
+    }
+
     // Update health panel function
     function updateHealthPanel(stepKey) {
         // Find target agent data (first agent in step)
@@ -105,25 +356,56 @@
 
         let targetData = null;
         let targetName = null;
+        const stepData = all_movement[stepKey];
 
-        for (let agentName in all_movement[stepKey]) {
-            if (agentName !== "description" && agentName !== "conversation") {
-                targetData = all_movement[stepKey][agentName];
+        for (let agentName in stepData) {
+            if (agentName === "description" || agentName === "conversation") continue;
+            const profile = agentProfiles[agentName];
+            if (profile && profile.roleLabel === "被管理者") {
+                targetData = stepData[agentName];
                 targetName = agentName;
                 break;
+            }
+        }
+
+        if (!targetData) {
+            for (let agentName in stepData) {
+                if (agentName !== "description" && agentName !== "conversation") {
+                    targetData = stepData[agentName];
+                    targetName = agentName;
+                    break;
+                }
             }
         }
 
         if (!targetData) return;
 
         // Update day
-        let day = targetData.day || 1;
-        document.getElementById("current-day").innerText = day;
+        const frameStep = Number(stepKey);
+        let dayValue = getDayForFrameStep(frameStep, targetData);
+        if (Number.isFinite(dayValue)) {
+            document.getElementById("current-day").innerText = dayValue;
+        } else {
+            document.getElementById("current-day").innerText = "--";
+        }
+        updateTotalDaysUI();
 
         // Update health score
         let healthScore = targetData.health_score;
-        if (healthScore !== undefined && healthScore !== null) {
-            document.getElementById("health-score").innerText = healthScore.toFixed(1);
+        const numericHealthScore = toNumber(healthScore);
+        if (Number.isFinite(numericHealthScore)) {
+            lastKnownHealthScore = numericHealthScore;
+        }
+        document.getElementById("health-score").innerText = formatScore(lastKnownHealthScore);
+
+        // Update satisfaction score
+        const satisfactionScore = extractSatisfactionScore(targetData);
+        if (Number.isFinite(satisfactionScore)) {
+            lastKnownSatisfactionScore = satisfactionScore;
+        }
+        const satisfactionEl = document.getElementById("satisfaction-score");
+        if (satisfactionEl) {
+            satisfactionEl.innerText = formatScore(lastKnownSatisfactionScore);
         }
 
         // Update health zone
@@ -139,31 +421,35 @@
         document.getElementById("tide-icon").innerText = tideInfo.icon;
 
         // Update intervention level
-        let level = targetData.intervention_level || 0;
+        let level = toNumber(targetData.intervention_level) || 0;
         let levelInfo = INTERVENTION_LEVELS[level] || INTERVENTION_LEVELS[0];
 
         let levelIndicator = document.getElementById("level-indicator");
-        levelIndicator.innerText = level;
+        levelIndicator.innerText = `L${level + 1}`;
         levelIndicator.className = "level-indicator level-" + level;
 
         document.getElementById("level-name").innerText = levelInfo.name;
 
-        let levelAction = targetData.intervention_action || "-";
+        let rawLevelAction = targetData.intervention_action || "";
+        let levelAction = rawLevelAction || "-";
         document.getElementById("level-action").innerText = levelAction;
 
         // Update sidebar agent activities
-        for (let agentName in all_movement[stepKey]) {
+        for (let agentName in stepData) {
             if (agentName === "description" || agentName === "conversation") continue;
 
-            let agentData = all_movement[stepKey][agentName];
-            let activityEl = document.getElementById("sidebar-activity-" + agentName);
-            if (activityEl && agentData.action) {
-                let action = agentData.action;
-                // Truncate if too long
-                if (action.length > 30) {
-                    action = action.substring(0, 27) + "...";
-                }
-                activityEl.innerText = action;
+            let agentData = stepData[agentName];
+            const roleText = getRoleLabel(agentName, agentData, level, rawLevelAction);
+            setSidebarText("sidebar-role-" + agentName, roleText);
+
+            let location = agentData.location || "-";
+            setSidebarText("sidebar-location-" + agentName, `位置：${location}`);
+
+            let action = agentData.action || "-";
+            const actionEl = document.getElementById("sidebar-action-" + agentName);
+            if (actionEl) {
+                actionEl.innerText = `动作：${truncateText(action, 36)}`;
+                actionEl.title = action;
             }
         }
     }
@@ -379,15 +665,22 @@
         if (!timelineEntries.length) return;
 
         const dayMap = new Map();
+        dayByStep = {};
         for (const entry of timelineEntries) {
             const dayKey = Number.isFinite(entry.day) ? entry.day : 1;
             if (!dayMap.has(dayKey)) {
                 dayMap.set(dayKey, []);
             }
             dayMap.get(dayKey).push(entry);
+            dayByStep[String(entry.step)] = dayKey;
         }
 
         const dayEntries = Array.from(dayMap.entries()).sort((a, b) => a[0] - b[0]);
+        const timelineDays = dayEntries.length;
+        if (!totalDays || totalDays < timelineDays) {
+            totalDays = timelineDays;
+        }
+        updateTotalDaysUI();
 
         timelineSteps = [];
         timelineNodes = [];
@@ -927,8 +1220,14 @@
         bindReplayUI();
 
         // Initial health panel update
-        updateHealthPanel(step.toString());
+        buildDayIndexMap();
+        const movementTotalDays = computeTotalDaysFromMovement();
+        totalDays = movementTotalDays > 0 ? movementTotalDays : dayIndexByDate.size;
+        updateTotalDaysUI();
         buildTimeline();
+        updateHealthPanel(step.toString());
+        bindAgentProfileClicks();
+        loadAgentProfiles();
     }
 
     // Update function
