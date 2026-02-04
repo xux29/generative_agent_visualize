@@ -713,6 +713,10 @@ class HealthSimulation:
                 target_location = getattr(intention, 'target_location', None)
                 if not target_location:
                     target_location = self._infer_target_location(intention.activity)
+                resolved_location = self._resolve_target_location(intention.activity, target_location)
+                if resolved_location:
+                    target_location = resolved_location
+                    intention.target_location = resolved_location
                 is_violation = self._is_violation_intention(intention, target_location)
 
                 # 睡眠检测：一旦进入睡眠即结束当天
@@ -1019,11 +1023,17 @@ class HealthSimulation:
         day_log["agents"][self.target_name] = target_data
 
         # 【累积健康分系统】计算每日变化
-        # 检测是否有违规行为
+        # 检测是否有违规行为（按场景限定）
         snacking_violations = target_data.get("snacking_count", 0)
         phone_violation = 1 if target_data.get("phone_duration_before_sleep", 0) > 60 else 0
-        unblocked_violation_count = snacking_violations + phone_violation
+        is_phone_scenario = "phone" in self.scenario_name or "手机" in self.scenario_name
+        if is_phone_scenario:
+            unblocked_violation_count = phone_violation
+        else:
+            unblocked_violation_count = snacking_violations
         had_violation = unblocked_violation_count > 0
+        day_log["unblocked_violation_count"] = unblocked_violation_count
+        day_log["had_violation"] = had_violation
         intervention_count = len(day_log.get("interventions", []))
         intervention_success = sum(
             1 for inv in day_log.get("interventions", [])
@@ -1378,6 +1388,10 @@ class HealthSimulation:
                 target_location = getattr(intention, 'target_location', None)
                 if not target_location:
                     target_location = self._infer_target_location(intention.activity)
+                resolved_location = self._resolve_target_location(intention.activity, target_location)
+                if resolved_location:
+                    target_location = resolved_location
+                    intention.target_location = resolved_location
                 is_violation = self._is_violation_intention(intention, target_location)
 
                 # 检查目标位置是否已被阻止
@@ -1635,6 +1649,8 @@ class HealthSimulation:
             if not matching_inv or matching_inv.get("level", 0) == 0:
                 unblocked_violations += 1
         had_violation = unblocked_violations > 0
+        day_log["unblocked_violation_count"] = unblocked_violations
+        day_log["had_violation"] = had_violation
 
         inv_levels = [inv.get("level", 0) for inv in day_log.get("interventions", [])]
         self.logger.info(
@@ -1824,6 +1840,8 @@ class HealthSimulation:
 
         activity = intention.activity
         semantic_key = getattr(intention, 'target_location', None)
+        if semantic_key and semantic_key not in self.scenario.semantic_locations:
+            semantic_key = self._resolve_target_location(activity, semantic_key)
 
         if getattr(intention, "discovered_blocked", False):
             redirect_activity = getattr(intention, "redirect_activity", None)
@@ -2062,9 +2080,10 @@ class HealthSimulation:
                 # 干预成功则不计入实际违规
                 continue
 
-            # Phone-related
-            if "手机" in content or "phone" in content:
-                data["phone_duration_before_sleep"] += 30
+            # Phone-related (only count in phone-addiction scenario)
+            if ("phone" in self.scenario_name or "手机" in self.scenario_name):
+                if "手机" in content or "phone" in content:
+                    data["phone_duration_before_sleep"] += 30
 
             # Food-related
             if any(word in content for word in ["吃", "零食", "夜宵", "食物", "eat", "snack"]):
@@ -2124,14 +2143,46 @@ class HealthSimulation:
             if kw in activity:
                 return "kitchen"
 
-        # ========== 手机相关 -> 手机区域/卧室 ==========
+        # ========== 手机相关 -> 仅在手机成瘾场景使用 ==========
         phone_keywords = ["手机", "玩手机", "刷手机", "游戏", "短视频"]
-        for kw in phone_keywords:
-            if kw in activity:
-                return "phone_area"
+        if "phone" in self.scenario_name or "手机" in self.scenario_name:
+            for kw in phone_keywords:
+                if kw in activity:
+                    return "phone_area"
 
         # 默认：客厅（晚间活动默认在客厅）
         return "living_room"
+
+    def _resolve_target_location(self, activity: str, target_location: str | None) -> str | None:
+        """确保目标位置可用，必要时映射到场景已有语义位置"""
+        semantic_locations = getattr(self.scenario, "semantic_locations", {}) or {}
+        if target_location and target_location in semantic_locations:
+            return target_location
+
+        # 非手机场景：手机相关意图直接回到客厅
+        phone_keywords = ["手机", "玩手机", "刷手机", "游戏", "短视频"]
+        if ("phone" not in self.scenario_name and "手机" not in self.scenario_name) and any(kw in activity for kw in phone_keywords):
+            if "living_room" in semantic_locations:
+                return "living_room"
+
+        # phone_area 在非手机场景时降级到客厅
+        if target_location == "phone_area" and "phone_area" not in semantic_locations:
+            if "living_room" in semantic_locations:
+                return "living_room"
+
+        # kitchen_door 不存在时回退到 kitchen
+        if target_location == "kitchen_door" and "kitchen" in semantic_locations:
+            return "kitchen"
+
+        inferred = self._infer_target_location(activity)
+        if inferred in semantic_locations:
+            return inferred
+
+        llm_key, _ = self._resolve_semantic_location_with_llm(activity)
+        if llm_key in semantic_locations:
+            return llm_key
+
+        return None
 
     def _is_sleep_activity(self, intention) -> bool:
         """判断意图是否睡眠相关"""
@@ -2246,7 +2297,7 @@ class HealthSimulation:
         action_text = (strategy.action or "").lower()
         action_label = strategy.action or ""
 
-        if "phone" in action_text or "手机" in action_label:
+        if ("phone" in self.scenario_name or "手机" in self.scenario_name) and ("phone" in action_text or "手机" in action_label):
             if "phone_area" in self.scenario.semantic_locations:
                 self._move_agent_to_location(self.manager_agent, "phone_area")
                 return "phone_area"
@@ -2302,7 +2353,7 @@ class HealthSimulation:
         if strategy.level == 2:
             action_text = (getattr(strategy, "raw_action", "") or "").lower()
             action_label = getattr(strategy, "raw_action", "") or ""
-            if "phone" in action_text or "手机" in action_label:
+            if ("phone" in self.scenario_name or "手机" in self.scenario_name) and ("phone" in action_text or "手机" in action_label):
                 strategy.action = "remove_phone"
             else:
                 strategy.action = "remove_food"

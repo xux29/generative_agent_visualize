@@ -38,23 +38,25 @@
 
     /* Health sidebar styles */
     .health-sidebar {
-        width: 280px;
-        min-width: 280px;
+        width: 360px;
+        min-width: 320px;
         background: #ffffff;
         color: #222;
-        padding: 20px 20px 72px;
+        padding: 18px 18px 16px;
         box-shadow: -2px 0 12px rgba(0,0,0,0.08);
-        overflow-y: auto;
+        overflow: hidden;
         height: 100vh;
         border-left: 1px solid #eee;
         position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
     }
 
     .sidebar-section {
         background: #f7f7f7;
         border-radius: 10px;
         padding: 15px;
-        margin-bottom: 15px;
         border: 1px solid #ededed;
     }
 
@@ -72,34 +74,34 @@
         margin: 10px 0;
     }
 
-    /* Day display */
-    .day-display {
+    .overview-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+    }
+
+    .overview-card {
+        background: #ffffff;
+        border-radius: 10px;
+        border: 1px solid #e5e7eb;
+        padding: 10px 8px;
         text-align: center;
-        font-size: 24px;
-        font-weight: bold;
-        margin-bottom: 5px;
+        min-height: 82px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 4px;
     }
 
-    .day-label {
-        font-size: 12px;
-        color: #666;
+    .overview-value {
+        font-size: 26px;
+        font-weight: 700;
+        color: #0f172a;
     }
 
-    /* Health score display */
-    .score-display {
-        text-align: center;
-    }
-
-    .score-value {
-        font-size: 48px;
-        font-weight: bold;
-        line-height: 1;
-    }
-
-    .score-label {
-        font-size: 12px;
-        color: #666;
-        margin-top: 5px;
+    .overview-label {
+        font-size: 11px;
+        color: #6b7280;
     }
 
     /* Health zone badges */
@@ -219,39 +221,26 @@
         margin-top: 2px;
     }
 
-    .satisfaction-display {
-        margin-top: 12px;
-        padding-top: 10px;
-        border-top: 1px dashed #e2e2e2;
-    }
-
-    .satisfaction-title {
-        font-size: 12px;
-        color: #666;
-        margin-bottom: 6px;
-        text-align: center;
-    }
-
-    .satisfaction-value {
-        text-align: center;
-        font-size: 28px;
-        font-weight: bold;
-        color: #0f766e;
-    }
-
     .trend-chart {
         width: 100%;
-        height: 120px;
+        height: 110px;
         display: block;
     }
 
-    .trend-legend {
+    .chart-block {
         display: flex;
-        gap: 12px;
-        font-size: 11px;
-        color: #666;
-        justify-content: center;
-        margin-top: 6px;
+        flex-direction: column;
+        gap: 6px;
+        padding: 8px 10px 10px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.7);
+        border: 1px solid #e5e7eb;
+    }
+
+    .chart-title {
+        font-size: 12px;
+        font-weight: 600;
+        color: #334155;
     }
 
     .chart-empty {
@@ -316,9 +305,9 @@
     }
     /* Sidebar help */
     .sidebar-help {
-        position: absolute;
-        right: 12px;
-        bottom: 8px;
+        margin-top: auto;
+        position: relative;
+        align-self: flex-end;
         z-index: 6;
     }
 
@@ -367,6 +356,70 @@
         font-size: 12px;
         line-height: 1.6;
         color: #666;
+    }
+
+    .profile-modal {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 30;
+    }
+
+    .profile-modal.open {
+        display: flex;
+    }
+
+    .profile-modal-backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.45);
+    }
+
+    .profile-modal-card {
+        position: relative;
+        width: min(520px, 90vw);
+        max-height: 80vh;
+        background: #ffffff;
+        border-radius: 14px;
+        box-shadow: 0 20px 40px rgba(15, 23, 42, 0.25);
+        border: 1px solid #e2e8f0;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        overflow: hidden;
+    }
+
+    .profile-modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .profile-modal-title {
+        font-size: 16px;
+        font-weight: 700;
+        color: #0f172a;
+    }
+
+    .profile-modal-close {
+        border: none;
+        background: #f1f5f9;
+        color: #0f172a;
+        font-size: 18px;
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        cursor: pointer;
+    }
+
+    .profile-modal-body {
+        overflow-y: auto;
+        padding-right: 4px;
+        max-height: 60vh;
     }
 
     /* Tide phase indicator */
@@ -475,8 +528,8 @@
         border-radius: 10px;
         background: rgba(255, 255, 255, 0.92);
         box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
-        max-height: 200px;
-        overflow-y: auto;
+        max-height: none;
+        overflow-y: visible;
         font-size: 12px;
         color: #0f172a;
     }
@@ -661,29 +714,32 @@
     <div class="health-sidebar">
         <div class="sidebar-section">
             <h4>模拟概况</h4>
-            <div class="day-display">
-                <span id="current-day">--</span> / <span id="total-days">--</span>
-            </div>
-            <div class="day-label" style="text-align: center;">天</div>
-            <hr>
-            <div class="score-display">
-                <div class="score-value" id="health-score">75</div>
-                <div class="score-label">累积健康分</div>
-                <span class="zone-badge zone-normal" id="health-zone">NORMAL</span>
-            </div>
-            <div class="satisfaction-display">
-                <div class="satisfaction-title">满意度</div>
-                <div class="satisfaction-value" id="satisfaction-score">--</div>
+            <div class="overview-grid">
+                <div class="overview-card">
+                    <div class="overview-value"><span id="current-day">--</span>/<span id="total-days">--</span></div>
+                    <div class="overview-label">当前天数</div>
+                </div>
+                <div class="overview-card">
+                    <div class="overview-value" id="health-score">--</div>
+                    <div class="overview-label">健康分</div>
+                    <span class="zone-badge zone-normal" id="health-zone">NORMAL</span>
+                </div>
+                <div class="overview-card">
+                    <div class="overview-value" id="satisfaction-score">--</div>
+                    <div class="overview-label">满意度</div>
+                </div>
             </div>
         </div>
 
         <div class="sidebar-section">
             <h4>总体统计</h4>
-            <div id="daily-score-chart" class="trend-chart"></div>
-            <div class="trend-legend">
-                <span class="legend-item"><span class="legend-dot" style="background:#2563eb;"></span>健康</span>
-                <span class="legend-item"><span class="legend-dot" style="background:#f97316;"></span>情绪</span>
-                <span class="legend-item"><span class="legend-dot" style="background:#111111;"></span>当前日</span>
+            <div class="chart-block">
+                <div class="chart-title">健康分</div>
+                <div id="overall-health-chart" class="trend-chart"></div>
+            </div>
+            <div class="chart-block" style="margin-top: 10px;">
+                <div class="chart-title">情绪分</div>
+                <div id="overall-emotion-chart" class="trend-chart"></div>
             </div>
         </div>
 
@@ -718,14 +774,6 @@
             </div>
         </div>
 
-        <div class="sidebar-section">
-            <h4>角色详情</h4>
-            <div class="agent-profile">
-                <div class="agent-profile-name" id="agent-profile-name">-</div>
-                <div class="agent-profile-body" id="agent-profile-body">点击头像查看详细信息</div>
-            </div>
-        </div>
-
         <div class="sidebar-help">
             <button class="help-icon" id="sidebar-help-toggle" type="button" aria-label="操作说明">？</button>
             <div class="help-popover" id="sidebar-help-popover" aria-hidden="true">
@@ -742,6 +790,17 @@
                 </div>
             </div>
         </div>
+    </div>
+</div>
+
+<div class="profile-modal" id="profile-modal" aria-hidden="true">
+    <div class="profile-modal-backdrop" id="profile-modal-backdrop"></div>
+    <div class="profile-modal-card" role="dialog" aria-modal="true">
+        <div class="profile-modal-header">
+            <div class="profile-modal-title" id="agent-profile-name">-</div>
+            <button class="profile-modal-close" id="profile-modal-close" type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="profile-modal-body agent-profile-body" id="agent-profile-body">点击头像查看详细信息</div>
     </div>
 </div>
 {% endblock content %}
@@ -784,7 +843,7 @@ if (helpToggle && helpPopover) {
 const sidebar = document.querySelector(".health-sidebar");
 const resizer = document.getElementById("sidebar-resizer");
 if (sidebar && resizer) {
-    const minWidth = 220;
+    const minWidth = 300;
     const maxWidth = 520;
     let resizing = false;
     let startX = 0;
