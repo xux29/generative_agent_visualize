@@ -37,6 +37,7 @@ from modules.scorer import Scorer, CumulativeHealthScorer, SelfDisciplineLevel, 
 from modules.scorer_nonlinear import NonlinearHealthScorer
 from modules.strategy import Strategy, StrategyManager, LongTermStrategyManager
 from modules.asymmetric_game import AsymmetricGameEngine, ManagerGoalType
+from modules.intention import Intention
 
 
 class HealthSimulation:
@@ -234,6 +235,10 @@ class HealthSimulation:
 
         if not self.target_agent or not self.manager_agent:
             raise ValueError("Failed to find target or manager agent")
+
+        # 记录初始位置（用于每天19:00重置到第一天起点）
+        self.initial_target_coord = tuple(self.target_agent.coord) if self.target_agent.coord else (7, 6)
+        self.initial_manager_coord = tuple(self.manager_agent.coord) if self.manager_agent.coord else (10, 7)
 
         # 从场景配置加载人设参数
         self._apply_profile_config()
@@ -611,7 +616,7 @@ class HealthSimulation:
 
         day_log = {
             "day": day,
-            "date": timer.get_logical_date().strftime("%Y-%m-%d"),  # 使用逻辑日期，凌晨归属前一天
+            "date": timer.get_logical_date(day_boundary_hour=7).strftime("%Y-%m-%d"),  # 使用逻辑日期，凌晨归属前一天
             "events": [],
             "interventions": [],
             "agents": {},
@@ -626,22 +631,33 @@ class HealthSimulation:
         # 新增：跟踪环境状态变化（用于折返检测）
         env_state = {
             "kitchen_locked": False,
-            "snacks_removed": False,
+            "food_removed": False,
             "phone_removed": False
         }
+        level2_used = False
+        level3_used = False
+        slept_today = False
 
         # 新增：重置agent位置到初始点（每天19:00）
-        initial_target_coord = (7, 6)  # 客厅初始位置
-        initial_manager_coord = (10, 7)  # 管理者初始位置
+        initial_target_coord = getattr(self, "initial_target_coord", (7, 6))
+        initial_manager_coord = getattr(self, "initial_manager_coord", (10, 7))
         self.target_agent.coord = initial_target_coord
         self.manager_agent.coord = initial_manager_coord
         self.logger.info(f"Day {day}: Reset agent positions - {self.target_name} at {initial_target_coord}, {self.manager_name} at {initial_manager_coord}")
+        if hasattr(self.target_agent, 'known_kitchen_locked'):
+            self.target_agent.known_kitchen_locked = False
+            self.target_agent.known_food_removed = False
+            self.target_agent.known_phone_removed = False
 
         # Reset daily state for health agents
         if hasattr(self.manager_agent, 'today_actions'):
             self.manager_agent.today_actions = []
         if hasattr(self.target_agent, 'today_behaviors'):
             self.target_agent.today_behaviors = []
+        if hasattr(self.target_agent, 'known_kitchen_locked'):
+            self.target_agent.known_kitchen_locked = False
+            self.target_agent.known_food_removed = False
+            self.target_agent.known_phone_removed = False
 
         # Step counter for checkpoint numbering
         if not hasattr(self, 'step_counter'):
@@ -659,6 +675,7 @@ class HealthSimulation:
 
             intention = None
             strategy = None
+            sleep_stop = False
 
             # Step 1: Target generates intention for this time slot
             # 传入 strategy_manager 以支持复发检测（潮汐性机制）
@@ -695,18 +712,31 @@ class HealthSimulation:
                 if not target_location:
                     target_location = self._infer_target_location(intention.activity)
 
+                # 睡眠检测：一旦进入睡眠即结束当天
+                if self._is_sleep_activity(intention):
+                    sleep_stop = True
+                    intention.is_sleep_related = True
+                    intention.target_location = "bedroom"
+                    target_location = "bedroom"
+                    slept_today = True
+
                 # 检查目标位置是否已被阻止（折返检测）
-                is_blocked, block_reason, blocked_at = self._check_env_blocked(target_location, env_state)
+                is_blocked = False
+                block_reason = None
+                blocked_location = None
+                if not sleep_stop:
+                    is_blocked, block_reason, blocked_location = self._check_env_blocked(target_location, env_state)
 
                 if is_blocked:
                     # 生成折返事件
                     turnaround = self._generate_turnaround(
-                        intention, target_location, block_reason, env_state
+                        intention, target_location, block_reason, env_state, blocked_location
                     )
 
                     # 更新意图的折返状态
                     intention.discovered_blocked = True
                     intention.block_reason = block_reason
+                    intention.blocked_location = blocked_location
                     intention.turnaround_monologue = turnaround.get("turnaround_monologue", "")
                     intention.redirect_activity = turnaround.get("redirect_activity", "看电视")
                     intention.redirect_location = turnaround.get("redirect_location", "living_room")
@@ -729,7 +759,7 @@ class HealthSimulation:
                         "agent": self.target_name,
                         "original_activity": intention.activity,
                         "target_location": target_location,
-                        "blocked_at": blocked_at,
+                        "blocked_at": blocked_location,
                         "block_reason": block_reason,
                         "turnaround_monologue": turnaround.get("turnaround_monologue", ""),
                         "redirect_activity": turnaround.get("redirect_activity", "看电视"),
@@ -737,11 +767,19 @@ class HealthSimulation:
                         "emotional_reaction": turnaround.get("emotional_reaction", "resigned")
                     })
 
+                    # 被管理者在现场发现阻止后更新认知
+                    if blocked_location == "kitchen_door":
+                        self.target_agent.known_kitchen_locked = True
+                    elif blocked_location == "kitchen":
+                        self.target_agent.known_food_removed = True
+                    elif blocked_location == "phone_area":
+                        self.target_agent.known_phone_removed = True
+
                     # 更新折返统计
                     day_log["turnaround_summary"]["total_turnarounds"] += 1
                     day_log["turnaround_summary"]["blocked_attempts"].append({
                         "time": time_str,
-                        "location": target_location,
+                        "location": blocked_location or target_location,
                         "reason": block_reason
                     })
 
@@ -749,7 +787,7 @@ class HealthSimulation:
                     day_log["agent_positions"].append({
                         "time": time_str,
                         "agent": self.target_name,
-                        "location": blocked_at or target_location,
+                        "location": blocked_location or target_location,
                         "status": "blocked"
                     })
                     day_log["agent_positions"].append({
@@ -783,106 +821,161 @@ class HealthSimulation:
                             "status": "arrived"
                         })
 
-                # Step 2: Manager evaluates and responds
-                if hasattr(self.manager_agent, 'evaluate_strategy'):
-                    strategy = self.manager_agent.evaluate_strategy(intention, self.target_agent)
+            # Step 2: Manager evaluates and responds
+            pending_env_update = {}
+            env_state_next = dict(env_state)
+            intervention_success = True
+            if not sleep_stop and hasattr(self.manager_agent, 'evaluate_strategy'):
+                strategy = self.manager_agent.evaluate_strategy(intention, self.target_agent)
 
-                    # V3: 管理者的隐藏策略影响干预级别（管理者内部决策，被管者不知道）
-                    # 获取当前健康分的估计（使用前一天的分数或默认值）
-                    estimated_health = 7.0  # 默认估计
-                    if self.daily_logs:
-                        estimated_health = self.daily_logs[-1].get("health_score", 7.0)
+                # V3: 管理者的隐藏策略影响干预级别（管理者内部决策，被管者不知道）
+                # 获取当前健康分的估计（使用前一天的分数或默认值）
+                estimated_health = 7.0  # 默认估计
+                if self.daily_logs:
+                    estimated_health = self.daily_logs[-1].get("health_score", 7.0)
 
-                    hidden_strategy = self.asymmetric_game.get_manager_strategy_hint(estimated_health)
-                    intervention_bias = hidden_strategy.get("intervention_bias", 0)
+                hidden_strategy = self.asymmetric_game.get_manager_strategy_hint(estimated_health)
+                intervention_bias = hidden_strategy.get("intervention_bias", 0)
 
-                    # 根据隐藏策略调整干预级别
-                    original_level = strategy.level
-                    if intervention_bias < -0.2 and strategy.level > 0:
-                        # 管理者想要减少干预（如建立信任期、测试自主期）
-                        if random.random() < abs(intervention_bias):
-                            strategy.level = max(0, strategy.level - 1)
-                            strategy.reason += f"（内部策略：{hidden_strategy['hidden_reason']}）"
-                    elif intervention_bias > 0.2 and strategy.level < 3:
-                        # 管理者想要增加干预（如耐心不足、健康分太低）
-                        if random.random() < intervention_bias:
-                            strategy.level = min(3, strategy.level + 1)
-                            strategy.reason += f"（内部策略：{hidden_strategy['hidden_reason']}）"
+                # 根据隐藏策略调整干预级别
+                original_level = strategy.level
+                if intervention_bias < -0.2 and strategy.level > 0:
+                    # 管理者想要减少干预（如建立信任期、测试自主期）
+                    if random.random() < abs(intervention_bias):
+                        strategy.level = max(0, strategy.level - 1)
+                        strategy.reason += f"（内部策略：{hidden_strategy['hidden_reason']}）"
+                elif intervention_bias > 0.2 and strategy.level < 3:
+                    # 管理者想要增加干预（如耐心不足、健康分太低）
+                    if random.random() < intervention_bias:
+                        strategy.level = min(3, strategy.level + 1)
+                        strategy.reason += f"（内部策略：{hidden_strategy['hidden_reason']}）"
 
-                    if strategy.level != original_level:
-                        self.logger.debug(
-                            f"[{time_str}] V3 Hidden strategy adjusted level: {original_level} -> {strategy.level}"
-                        )
-
-                    self.logger.info(f"[{time_str}] {self.manager_name} decides: Level {strategy.level} - {strategy.action}")
-
-                    # 更新环境状态（基于干预动作）
-                    if strategy.level >= 2:
-                        action_text = strategy.action.lower() if strategy.action else ""
-                        if "移除" in strategy.action or "remove" in action_text:
-                            if "零食" in strategy.action or "snack" in action_text:
-                                env_state["snacks_removed"] = True
-                            if "手机" in strategy.action or "phone" in action_text:
-                                env_state["phone_removed"] = True
-                        if strategy.level == 3:
-                            if "厨房" in strategy.action or "kitchen" in action_text:
-                                env_state["kitchen_locked"] = True
-
-                    day_log["interventions"].append({
-                        "time": time_str,
-                        "level": strategy.level,
-                        "action": strategy.action,
-                        "reason": strategy.reason,
-                        "succeeded": intervention_success if 'intervention_success' in dir() else True,
-                        # V3: 记录试探边界信息（用于分析）
-                        "was_boundary_test": is_testing_boundary,
-                        "boundary_test_monologue": boundary_test_monologue if is_testing_boundary else None,
-                    })
-
-                    # Step 3: Execute intervention if needed
-                    intervention_success = True
-                    if strategy.level > 0 and hasattr(self.manager_agent, 'execute_intervention'):
-                        intervention_success = self.manager_agent.execute_intervention(strategy, self.target_agent)
-                        self.logger.info(f"[{time_str}] Intervention {'succeeded' if intervention_success else 'failed'}")
-
-                    # V3: 被管理者观察干预（更新其感知）
-                    self.asymmetric_game.managed_mind.observe_intervention(
-                        day=day,
-                        level=strategy.level,
-                        was_successful=intervention_success
+                if strategy.level != original_level:
+                    self.logger.debug(
+                        f"[{time_str}] V3 Hidden strategy adjusted level: {original_level} -> {strategy.level}"
                     )
 
-                    # 记录管理者位置
-                    if strategy.level > 0:
-                        # 正在干预：移向目标附近
-                        day_log["manager_positions"].append({
-                            "time": time_str,
-                            "agent": self.manager_name,
-                            "location": target_location or "near_target",
-                            "reason": "执行干预"
-                        })
-                    else:
-                        # 未干预：空闲位置（客厅或卧室）
-                        hour = int(time_str.split(":")[0])
-                        idle_location = "living_room" if hour < 23 else "bedroom"
-                        day_log["manager_positions"].append({
-                            "time": time_str,
-                            "agent": self.manager_name,
-                            "location": idle_location,
-                            "reason": f"空闲在{idle_location}"
-                        })
+                # 当天L3/L4不重复
+                strategy = self._adjust_intervention_for_day(strategy, level2_used, level3_used)
+
+                self.logger.info(f"[{time_str}] {self.manager_name} decides: Level {strategy.level} - {strategy.action}")
+
+                remove_location = None
+                if strategy.level >= 2:
+                    remove_location = self._move_manager_to_item(strategy)
+                    action_text = (strategy.action or "").lower()
+                    action_label = strategy.action or ""
+                    if strategy.level == 2:
+                        if "手机" in action_label or "phone" in action_text:
+                            pending_env_update["phone_removed"] = True
+                        else:
+                            pending_env_update["food_removed"] = True
+                    if strategy.level == 3:
+                        pending_env_update["kitchen_locked"] = True
+
+                if strategy.level == 2:
+                    level2_used = True
+                if strategy.level == 3:
+                    level3_used = True
+
+                # Step 3: Execute intervention if needed
+                if strategy.level > 0 and hasattr(self.manager_agent, 'execute_intervention'):
+                    intervention_success = self.manager_agent.execute_intervention(strategy, self.target_agent)
+                    self.logger.info(f"[{time_str}] Intervention {'succeeded' if intervention_success else 'failed'}")
+
+                # V3: 被管理者观察干预（更新其感知）
+                self.asymmetric_game.managed_mind.observe_intervention(
+                    day=day,
+                    level=strategy.level,
+                    was_successful=intervention_success
+                )
+
+                day_log["interventions"].append({
+                    "time": time_str,
+                    "level": strategy.level,
+                    "action": strategy.action,
+                    "reason": strategy.reason,
+                    "succeeded": intervention_success,
+                    # V3: 记录试探边界信息（用于分析）
+                    "was_boundary_test": is_testing_boundary,
+                    "boundary_test_monologue": boundary_test_monologue if is_testing_boundary else None,
+                })
+
+                # 记录管理者位置
+                if strategy.level > 0:
+                    # 正在干预：移向目标附近
+                    day_log["manager_positions"].append({
+                        "time": time_str,
+                        "agent": self.manager_name,
+                        "location": remove_location or target_location or "near_target",
+                        "reason": "执行干预"
+                    })
+                else:
+                    # 未干预：空闲位置（客厅或卧室）
+                    hour = int(time_str.split(":")[0])
+                    idle_location = "living_room" if hour < 23 else "bedroom"
+                    day_log["manager_positions"].append({
+                        "time": time_str,
+                        "agent": self.manager_name,
+                        "location": idle_location,
+                        "reason": f"空闲在{idle_location}"
+                    })
+
+                if intervention_success and pending_env_update:
+                    env_state_next.update(pending_env_update)
 
             # Step 4: Move agents based on intention/intervention
-            self._move_agents_based_on_intention(intention, day_log)
+            self._move_agents_based_on_intention(intention, day_log, strategy)
 
             # Save checkpoint for replay
-            self._save_checkpoint(timer.get_date(), intention, strategy)
+            self._save_checkpoint(timer.get_date(), intention, strategy, env_state=env_state_next)
+
+            # Apply environment changes after checkpoint (so markers appear after arrival)
+            env_state = env_state_next
+
+            if strategy and strategy.level == 3 and intervention_success:
+                # Locking done; manager leaves the area
+                self._move_agent_to_location(self.manager_agent, "living_room")
+
+            if sleep_stop:
+                break
 
             # Advance time by poll interval
             timer.forward(poll_interval_minutes)
 
         # End of monitoring period
         self.logger.info(f"Day {day} monitoring period ended")
+
+        # 如果当天仍未睡觉，则强制 02:00 入睡并结束
+        if not slept_today:
+            self.step_counter += 1
+            forced_time = timer.get_date()
+            forced_time_str = forced_time.strftime("%H:%M")
+            forced_intention = Intention(
+                activity="睡觉",
+                duration=30,
+                compliance_threshold=1,
+                inner_monologue="该睡觉了，明天还要早起",
+                target_location="bedroom",
+                is_sleep_related=True
+            )
+            day_log["events"].append({
+                "time": forced_time_str,
+                "type": "intention",
+                "agent": self.target_name,
+                "content": forced_intention.activity,
+                "inner_monologue": forced_intention.inner_monologue,
+                "target_location": "bedroom"
+            })
+            day_log["agent_positions"].append({
+                "time": forced_time_str,
+                "agent": self.target_name,
+                "location": "bedroom",
+                "status": "arrived"
+            })
+            self._move_agents_based_on_intention(forced_intention, day_log, None)
+            self._move_agents_based_on_intention(forced_intention, day_log, None)
+            self._save_checkpoint(forced_time, forced_intention, None, env_state=env_state)
 
         # Calculate scores
         target_data = self._collect_target_data(day_log)
@@ -1160,7 +1253,7 @@ class HealthSimulation:
 
         day_log = {
             "day": day,
-            "date": timer.get_logical_date().strftime("%Y-%m-%d"),  # 使用逻辑日期，凌晨归属前一天
+            "date": timer.get_logical_date(day_boundary_hour=7).strftime("%Y-%m-%d"),  # 使用逻辑日期，凌晨归属前一天
             "events": [],
             "interventions": [],
             "agents": {},
@@ -1168,8 +1261,8 @@ class HealthSimulation:
         }
 
         # 重置agent位置到初始点（每天19:00）
-        initial_target_coord = (7, 6)  # 客厅初始位置
-        initial_manager_coord = (10, 7)  # 管理者初始位置
+        initial_target_coord = getattr(self, "initial_target_coord", (7, 6))
+        initial_manager_coord = getattr(self, "initial_manager_coord", (10, 7))
         self.target_agent.coord = initial_target_coord
         self.manager_agent.coord = initial_manager_coord
         self.logger.info(f"Day {day}: Reset agent positions - {self.target_name} at {initial_target_coord}, {self.manager_name} at {initial_manager_coord}")
@@ -1209,9 +1302,12 @@ class HealthSimulation:
         # 跟踪环境状态变化（用于折返检测）
         env_state = {
             "kitchen_locked": False,
-            "snacks_removed": False,
+            "food_removed": False,
             "phone_removed": False
         }
+        level2_used = False
+        level3_used = False
+        slept_today = False
 
         # 初始化位置追踪
         if "agent_positions" not in day_log:
@@ -1226,18 +1322,36 @@ class HealthSimulation:
 
         for i, (intention, strategy) in enumerate(zip(intentions, strategies)):
             time_str = time_slots[i] if i < len(time_slots) else f"{21 + i//2}:{(i%2)*30:02d}"
+            sleep_stop = False
+            remove_location = None
+
+            if intention and self._is_sleep_activity(intention):
+                sleep_stop = True
+                slept_today = True
+                intention.is_sleep_related = True
+                intention.target_location = "bedroom"
+                strategy = Strategy.observe("睡觉中")
+
+            if strategy:
+                strategy = self._adjust_intervention_for_day(strategy, level2_used, level3_used)
 
             # 先处理策略执行，更新环境状态
             if strategy and strategy.level >= 2:
-                action_text = strategy.action.lower() if strategy.action else ""
-                if "移除" in strategy.action or "remove" in action_text:
-                    if "零食" in strategy.action or "snack" in action_text:
-                        env_state["snacks_removed"] = True
-                    if "手机" in strategy.action or "phone" in action_text:
+                remove_location = self._move_manager_to_item(strategy)
+                action_text = (strategy.action or "").lower()
+                action_label = strategy.action or ""
+                if strategy.level == 2:
+                    if "手机" in action_label or "phone" in action_text:
                         env_state["phone_removed"] = True
+                    else:
+                        env_state["food_removed"] = True
                 if strategy.level == 3:
-                    if "厨房" in strategy.action or "kitchen" in action_text:
-                        env_state["kitchen_locked"] = True
+                    env_state["kitchen_locked"] = True
+
+                if strategy.level == 2:
+                    level2_used = True
+                if strategy.level == 3:
+                    level3_used = True
 
             if intention:
                 # 解析意图的目标位置（优先使用意图自带的，否则推断）
@@ -1246,17 +1360,22 @@ class HealthSimulation:
                     target_location = self._infer_target_location(intention.activity)
 
                 # 检查目标位置是否已被阻止
-                is_blocked, block_reason, blocked_at = self._check_env_blocked(target_location, env_state)
+                is_blocked = False
+                block_reason = None
+                blocked_location = None
+                if not sleep_stop:
+                    is_blocked, block_reason, blocked_location = self._check_env_blocked(target_location, env_state)
 
                 if is_blocked:
                     # 生成折返事件
                     turnaround = self._generate_turnaround(
-                        intention, target_location, block_reason, env_state
+                        intention, target_location, block_reason, env_state, blocked_location
                     )
 
                     # 更新意图的折返状态
                     intention.discovered_blocked = True
                     intention.block_reason = block_reason
+                    intention.blocked_location = blocked_location
                     intention.turnaround_monologue = turnaround.get("turnaround_monologue", "")
                     intention.redirect_activity = turnaround.get("redirect_activity", "看电视")
                     intention.redirect_location = turnaround.get("redirect_location", "living_room")
@@ -1279,7 +1398,7 @@ class HealthSimulation:
                         "agent": self.target_name,
                         "original_activity": intention.activity,
                         "target_location": target_location,
-                        "blocked_at": blocked_at,
+                        "blocked_at": blocked_location,
                         "block_reason": block_reason,
                         "turnaround_monologue": turnaround.get("turnaround_monologue", ""),
                         "redirect_activity": turnaround.get("redirect_activity", "看电视"),
@@ -1287,11 +1406,19 @@ class HealthSimulation:
                         "emotional_reaction": turnaround.get("emotional_reaction", "resigned")
                     })
 
+                    # 被管理者在现场发现阻止后更新认知
+                    if blocked_location == "kitchen_door":
+                        self.target_agent.known_kitchen_locked = True
+                    elif blocked_location == "kitchen":
+                        self.target_agent.known_food_removed = True
+                    elif blocked_location == "phone_area":
+                        self.target_agent.known_phone_removed = True
+
                     # 更新折返统计
                     day_log["turnaround_summary"]["total_turnarounds"] += 1
                     day_log["turnaround_summary"]["blocked_attempts"].append({
                         "time": time_str,
-                        "location": target_location,
+                        "location": blocked_location or target_location,
                         "reason": block_reason
                     })
 
@@ -1299,7 +1426,7 @@ class HealthSimulation:
                     day_log["agent_positions"].append({
                         "time": time_str,
                         "agent": self.target_name,
-                        "location": blocked_at or target_location,
+                        "location": blocked_location or target_location,
                         "status": "blocked"
                     })
                     day_log["agent_positions"].append({
@@ -1355,7 +1482,7 @@ class HealthSimulation:
                     day_log["manager_positions"].append({
                         "time": time_str,
                         "agent": self.manager_name,
-                        "location": target_loc or "near_target",
+                        "location": remove_location or target_loc or "near_target",
                         "reason": "执行干预"
                     })
                 else:
@@ -1368,7 +1495,50 @@ class HealthSimulation:
                         "reason": f"空闲在{idle_location}"
                     })
 
+            # Move agents in batch mode for consistent coordinates
+            if intention:
+                self._move_agents_based_on_intention(intention, day_log, strategy)
+
+            if strategy and strategy.level == 3:
+                # Locking done; manager leaves the area
+                self._move_agent_to_location(self.manager_agent, "living_room")
+
             self.step_counter += 1
+
+            if sleep_stop:
+                intentions = intentions[: i + 1]
+                strategies = strategies[: i + 1]
+                break
+
+        # 如果当天仍未睡觉，则强制 02:00 入睡
+        if not slept_today:
+            self.step_counter += 1
+            forced_time_str = end_hour_str
+            forced_intention = Intention(
+                activity="睡觉",
+                duration=30,
+                compliance_threshold=1,
+                inner_monologue="该睡觉了，明天还要早起",
+                time_str=forced_time_str,
+                target_location="bedroom",
+                is_sleep_related=True
+            )
+            intentions.append(forced_intention)
+            strategies.append(Strategy.observe("强制睡觉"))
+            day_log["events"].append({
+                "time": forced_time_str,
+                "type": "intention",
+                "agent": self.target_name,
+                "content": forced_intention.activity,
+                "inner_monologue": forced_intention.inner_monologue,
+                "target_location": "bedroom"
+            })
+            day_log["agent_positions"].append({
+                "time": forced_time_str,
+                "agent": self.target_name,
+                "location": "bedroom",
+                "status": "arrived"
+            })
 
         # Step 4: 计算分数和更新状态（使用累积健康分系统）
         target_data = self._collect_target_data(day_log)
@@ -1570,7 +1740,7 @@ class HealthSimulation:
 
         return day_log
 
-    def _move_agents_based_on_intention(self, intention, day_log):
+    def _move_agents_based_on_intention(self, intention, day_log, strategy=None):
         """根据意图内容判断语义位置并移动 agent
 
         优先使用关键词推断，比 LLM 判断更可靠。
@@ -1586,6 +1756,16 @@ class HealthSimulation:
             semantic_key = self._infer_target_location(activity)
 
         target_address = None
+        bed_moved = False
+        # 睡眠时优先去床
+        if self._is_sleep_activity(intention):
+            bed_address = self._get_bed_address()
+            if bed_address:
+                self._move_agent_to_semantic_address(self.target_agent, bed_address, activity)
+                semantic_key = "bedroom"
+                target_address = bed_address
+                bed_moved = True
+
         if semantic_key and semantic_key in self.scenario.semantic_locations:
             addresses = self.scenario.semantic_locations[semantic_key]
             if addresses:
@@ -1596,16 +1776,15 @@ class HealthSimulation:
         if not target_address:
             semantic_key, target_address = self._resolve_semantic_location_with_llm(activity)
 
-        if semantic_key and target_address:
+        if semantic_key and target_address and not bed_moved:
             # 移动目标 agent 到解析的位置
             self._move_agent_to_semantic_address(self.target_agent, target_address, activity)
         else:
             self.logger.debug(f"无法解析位置: {activity}")
 
-        # 如果管理者正在干预，跟随目标
-        interventions = day_log.get("interventions", [])
-        if interventions and interventions[-1].get("level", 0) > 0:
-            self._move_agent_toward(self.manager_agent, self.target_agent)
+        # 劝说时，管理者移动到目标 agent 坐标
+        if strategy and strategy.level == 1:
+            self._move_manager_to_target(self.manager_agent, self.target_agent)
 
     def _resolve_semantic_location_with_llm(self, intention_activity: str) -> tuple:
         """
@@ -1642,7 +1821,7 @@ class HealthSimulation:
         return None, None
 
     def _move_agent_to_semantic_address(self, agent, address: list, activity: str):
-        """移动 agent 到指定的 maze 地址"""
+        """移动 agent 到指定的 maze 地址（使用寻路）"""
         tiles = self.game.maze.get_address_tiles(address)
         if not tiles:
             self.logger.warning(f"地址无对应坐标: {address}")
@@ -1650,8 +1829,17 @@ class HealthSimulation:
 
         target_coord = random.choice(list(tiles))
 
-        old_coord = agent.coord
-        agent.coord = target_coord
+        current_coord = list(agent.coord) if agent.coord else [0, 0]
+        if list(current_coord) == list(target_coord):
+            self.logger.debug(f"{agent.name} already at target {address}")
+            return True
+
+        # 使用寻路路径
+        path = self.game.maze.find_path(current_coord, list(target_coord))
+        if path and len(path) > 0:
+            agent.move(target_coord, path)
+        else:
+            agent.coord = target_coord
 
         # 更新 action 事件
         if agent.action and agent.action.event:
@@ -1660,11 +1848,11 @@ class HealthSimulation:
             agent.action.event.predicate = "正在"
             agent.action.event.object = activity
 
-        self.logger.info(f"移动 {agent.name}: {old_coord} -> {target_coord} ({':'.join(address)})")
+        self.logger.info(f"移动 {agent.name}: {current_coord} -> {target_coord} ({':'.join(address)})")
         return True
 
     def _move_agent_to_location(self, agent, location_keyword: str) -> bool:
-        """将 agent 移动到语义位置对应的坐标"""
+        """将 agent 移动到语义位置对应的坐标（使用寻路）"""
         if location_keyword not in self.scenario.semantic_locations:
             self.logger.debug(f"语义位置 '{location_keyword}' 未定义")
             return False
@@ -1681,61 +1869,85 @@ class HealthSimulation:
             self.logger.warning(f"地址无对应坐标: {target_address}")
             return False
 
-        target_coord = random.choice(list(tiles))
+        if location_keyword == "kitchen_door":
+            outside = self._get_kitchen_door_outside_coord()
+            target_coord = outside if outside else random.choice(list(tiles))
+        else:
+            target_coord = random.choice(list(tiles))
 
-        # 更新 agent 坐标
-        old_coord = agent.coord
-        agent.coord = target_coord
+        current_coord = list(agent.coord) if agent.coord else [0, 0]
+        if list(current_coord) != list(target_coord):
+            path = self.game.maze.find_path(current_coord, list(target_coord))
+            if path and len(path) > 0:
+                agent.move(target_coord, path)
+            else:
+                agent.coord = target_coord
 
         # 更新 action.event.address
         if agent.action and agent.action.event:
             agent.action.event.address = target_address
 
-        self.logger.info(f"移动 {agent.name}: {old_coord} -> {target_coord}")
+        self.logger.info(f"移动 {agent.name}: {current_coord} -> {target_coord}")
         return True
 
     def _move_agent_toward(self, agent, target_agent) -> bool:
-        """将 agent 移动到目标 agent 所在区域（用于干预）"""
-        if target_agent.coord is None:
+        """将 agent 移动到目标 agent 附近（使用寻路）"""
+        if not agent or not target_agent:
             return False
 
-        # 获取目标的当前地址
-        target_address = None
-        if target_agent.action and target_agent.action.event:
-            target_address = target_agent.action.event.address
+        current_coord = list(agent.coord) if agent.coord else [0, 0]
+        target_coord = list(target_agent.coord) if target_agent.coord else [0, 0]
 
-        if not target_address:
-            target_tile = self.game.maze.tile_at(target_agent.coord)
-            if target_tile:
-                target_address = target_tile.get_address("arena", as_list=True)
-
-        if not target_address:
-            # 如果无法获取地址，直接移动到目标附近
-            old_coord = agent.coord
-            agent.coord = target_agent.coord
-            self.logger.info(f"移动 {agent.name} 靠近 {target_agent.name}: {old_coord} -> {agent.coord}")
+        if current_coord == target_coord:
+            self.logger.debug(f"{agent.name} already at {target_agent.name}'s location")
             return True
 
-        # 获取同一区域(arena级别)的坐标
-        area_address = target_address[:3] if len(target_address) >= 3 else target_address
-        tiles = self.game.maze.get_address_tiles(area_address)
+        path = self.game.maze.find_path(current_coord, target_coord)
+        if path and len(path) > 1:
+            dest = path[-2] if len(path) > 1 else path[-1]
+            agent.move(dest, path[:-1] if len(path) > 1 else path)
+            self.logger.info(f"移动 {agent.name} 靠近 {target_agent.name}: {current_coord} -> {dest}")
+            return True
+        if path and len(path) == 1:
+            self.logger.debug(f"{agent.name} already adjacent to {target_agent.name}")
+            return True
+        self.logger.debug(f"No path found for {agent.name} to reach {target_agent.name}")
+        return False
 
-        if not tiles:
-            tiles = {target_agent.coord}
+    def _move_manager_to_target(self, agent, target_agent) -> bool:
+        """将管理者移动到目标 agent 坐标（劝说时使用）"""
+        if not agent or not target_agent:
+            return False
 
-        available_tiles = [t for t in tiles if t != target_agent.coord]
-        if not available_tiles:
-            available_tiles = list(tiles)
+        current_coord = list(agent.coord) if agent.coord else [0, 0]
+        target_coord = list(target_agent.coord) if target_agent.coord else [0, 0]
 
-        target_coord = random.choice(available_tiles)
+        if current_coord == target_coord:
+            self.logger.debug(f"{agent.name} already at {target_agent.name}'s location")
+            return True
 
-        old_coord = agent.coord
-        agent.coord = target_coord
+        path = self.game.maze.find_path(current_coord, target_coord)
+        if path and len(path) > 0:
+            # 允许同格或相邻格，优先相邻避免重叠
+            if len(path) > 1:
+                dest = path[-2]
+                move_path = path[:-1]
+            else:
+                dest = path[-1]
+                move_path = path
+            agent.move(dest, move_path)
+            self.logger.info(f"移动 {agent.name} 到 {target_agent.name}: {current_coord} -> {dest}")
+        else:
+            self.logger.debug(f"No path found for {agent.name} to reach {target_agent.name}")
+            return False
 
+        # 同步管理者 action 地址为目标位置（用于可视化）
         if agent.action and agent.action.event:
-            agent.action.event.address = area_address
-
-        self.logger.info(f"移动 {agent.name} 靠近 {target_agent.name}: {old_coord} -> {target_coord}")
+            target_address = None
+            if target_agent.action and target_agent.action.event:
+                target_address = target_agent.action.event.address
+            if target_address:
+                agent.action.event.address = target_address
         return True
 
     def _collect_target_data(self, day_log):
@@ -1819,6 +2031,84 @@ class HealthSimulation:
         # 默认：客厅（晚间活动默认在客厅）
         return "living_room"
 
+    def _is_sleep_activity(self, intention) -> bool:
+        """判断意图是否睡眠相关"""
+        if not intention:
+            return False
+        if getattr(intention, "is_sleep_related", False):
+            return True
+        activity = getattr(intention, "activity", "") or ""
+        sleep_keywords = ["睡", "休息", "躺", "床", "准备睡觉", "洗漱", "晚安", "sleep", "bed"]
+        return any(kw in activity for kw in sleep_keywords)
+
+    def _get_bed_address(self):
+        """优先获取卧室中的床地址"""
+        addresses = self.scenario.semantic_locations.get("bedroom", [])
+        if not addresses:
+            return None
+        keywords = ["床", "bed"]
+        for address in addresses:
+            if any(k in part for part in address for k in keywords):
+                return address
+        return addresses[0]
+
+    def _get_food_address(self):
+        """优先获取厨房内的食物/冰箱地址"""
+        addresses = self.scenario.semantic_locations.get("kitchen", [])
+        if not addresses:
+            return None
+        keywords = ["冰箱", "柜", "食物", "零食柜", "food", "fridge", "pantry", "cabinet"]
+        for address in addresses:
+            if any(k in part for part in address for k in keywords):
+                return address
+        return addresses[0]
+
+    def _move_manager_to_item(self, strategy):
+        """移除物品时，管理者必须到目标物品位置"""
+        if not strategy or strategy.level < 2:
+            return None
+        action_text = (strategy.action or "").lower()
+        action_label = strategy.action or ""
+
+        if "phone" in action_text or "手机" in action_label:
+            if "phone_area" in self.scenario.semantic_locations:
+                self._move_agent_to_location(self.manager_agent, "phone_area")
+                return "phone_area"
+            self._move_agent_to_location(self.manager_agent, "bedroom")
+            return "bedroom"
+
+        if strategy.level == 2:
+            food_address = self._get_food_address()
+            if food_address:
+                self._move_agent_to_semantic_address(self.manager_agent, food_address, action_label or "移除食物")
+                return "kitchen"
+        if strategy.level == 3:
+            # 锁门前先让所有 agent 离开厨房区域
+            self._ensure_agents_outside_kitchen()
+            if "kitchen_door" in self.scenario.semantic_locations:
+                self._move_agent_to_location(self.manager_agent, "kitchen_door")
+                return "kitchen_door"
+            self._move_agent_to_location(self.manager_agent, "kitchen")
+            return "kitchen"
+        return None
+    def _adjust_intervention_for_day(self, strategy, level2_used: bool, level3_used: bool):
+        """确保当天 L3/L4 不重复，允许 L1 劝说"""
+        if not strategy:
+            return strategy
+        # L4 执行后，当天不再需要 L3/L4
+        if level3_used and strategy.level >= 2:
+            strategy.level = 1
+            strategy.action = "persuade"
+            strategy.reason = f"{strategy.reason}（当天已执行过L4，降级为劝说）"
+            return strategy
+        # L3 不重复
+        if level2_used and strategy.level == 2:
+            strategy.level = 1
+            strategy.action = "persuade"
+            strategy.reason = f"{strategy.reason}（当天已执行过L3，降级为劝说）"
+            return strategy
+        return strategy
+
     def _check_env_blocked(self, target_location: str, env_state: dict) -> tuple:
         """检查目标位置是否被环境状态阻止
 
@@ -1835,15 +2125,16 @@ class HealthSimulation:
         if target_location == "kitchen" and env_state.get("kitchen_locked", False):
             return True, "厨房门被锁了", "kitchen_door"
 
-        if target_location == "snacks_area" and env_state.get("snacks_removed", False):
-            return True, "零食已被收走", "kitchen"
+        if target_location == "kitchen" and env_state.get("food_removed", False):
+            return True, "厨房里没有可吃的东西", "kitchen"
 
         if target_location == "phone_area" and env_state.get("phone_removed", False):
-            return True, "手机已被没收", "bedroom"
+            return True, "手机已被没收", "phone_area"
 
         return False, None, None
 
-    def _generate_turnaround(self, intention, target_location: str, block_reason: str, env_state: dict) -> dict:
+    def _generate_turnaround(self, intention, target_location: str, block_reason: str, env_state: dict,
+                             blocked_location: str = None) -> dict:
         """生成折返独白和替代活动
 
         Args:
@@ -1851,6 +2142,7 @@ class HealthSimulation:
             target_location: 被阻止的目标位置
             block_reason: 阻止原因
             env_state: 当前环境状态
+            blocked_location: 被阻止的具体位置（如"kitchen_door"）
 
         Returns:
             dict: 包含 turnaround_monologue, redirect_activity, redirect_location, emotional_reaction
@@ -1859,8 +2151,8 @@ class HealthSimulation:
         constraints = []
         if env_state.get("kitchen_locked"):
             constraints.append("厨房已被锁定")
-        if env_state.get("snacks_removed"):
-            constraints.append("零食已被移除")
+        if env_state.get("food_removed"):
+            constraints.append("厨房食物已被移除")
         if env_state.get("phone_removed"):
             constraints.append("手机已被没收")
         env_constraints_str = "；".join(constraints) if constraints else "无"
@@ -1874,7 +2166,8 @@ class HealthSimulation:
             "bedroom": "卧室",
             "living_room": "客厅"
         }
-        target_location_desc = location_desc_map.get(target_location, target_location)
+        location_key = blocked_location or target_location
+        target_location_desc = location_desc_map.get(location_key, location_key)
 
         try:
             output = self.target_agent.completion(
@@ -1893,25 +2186,25 @@ class HealthSimulation:
                 return output
             else:
                 # Fallback：使用模板
-                return self._turnaround_template(target_location, block_reason)
+                return self._turnaround_template(location_key, block_reason)
 
         except Exception as e:
             self.logger.warning(f"折返生成失败: {e}，使用模板")
-            return self._turnaround_template(target_location, block_reason)
+            return self._turnaround_template(location_key, block_reason)
 
     def _turnaround_template(self, target_location: str, block_reason: str) -> dict:
         """折返模板（当LLM调用失败时使用）"""
         templates = {
-            "kitchen": {
-                "turnaround_monologue": f"去厨房想找点东西吃，结果{block_reason}。估计是{self.manager_name}担心我偷吃，算了，只能去看会儿电视了。",
+            "kitchen_door": {
+                "turnaround_monologue": f"走到厨房门口发现{block_reason}，看来暂时进不去了。只能去客厅待会儿。",
                 "redirect_activity": "去客厅看电视",
                 "redirect_location": "living_room",
                 "emotional_reaction": "resigned"
             },
-            "snacks_area": {
-                "turnaround_monologue": f"想找点零食吃，翻了半天发现{block_reason}。估计是{self.manager_name}把零食藏起来了，只好看电视了。",
-                "redirect_activity": "去客厅看电视",
-                "redirect_location": "living_room",
+            "kitchen": {
+                "turnaround_monologue": f"到厨房想找点吃的，结果{block_reason}。估计是{self.manager_name}把食物拿走了，那就在厨房找找别的。",
+                "redirect_activity": "在厨房找其他食物",
+                "redirect_location": "kitchen",
                 "emotional_reaction": "frustrated"
             },
             "phone_area": {
@@ -1965,6 +2258,10 @@ class HealthSimulation:
             return None
 
         try:
+            if semantic_key == "kitchen_door":
+                outside = self._get_kitchen_door_outside_coord()
+                if outside:
+                    return outside
             # 获取语义位置的地址列表
             addresses = self.scenario.semantic_locations.get(semantic_key, [])
             if not addresses:
@@ -1983,6 +2280,53 @@ class HealthSimulation:
 
         return None
 
+    def _get_kitchen_area_tiles(self):
+        """获取厨房区域所有坐标"""
+        tiles = set()
+        addresses = self.scenario.semantic_locations.get("kitchen", [])
+        for address in addresses:
+            try:
+                addr_tiles = self.game.maze.get_address_tiles(address)
+                if addr_tiles:
+                    tiles.update(addr_tiles)
+            except Exception:
+                continue
+        return tiles
+
+    def _get_kitchen_door_outside_coord(self):
+        """厨房门外左侧一格坐标（用于锁门与折返显示）"""
+        addresses = self.scenario.semantic_locations.get("kitchen_door", [])
+        if not addresses:
+            return None
+        try:
+            tiles = self.game.maze.get_address_tiles(addresses[0])
+            if not tiles:
+                return None
+            door_coord = list(tiles)[0]
+            target = (door_coord[0] - 1, door_coord[1])
+            if 0 <= target[0] < self.game.maze.maze_width and 0 <= target[1] < self.game.maze.maze_height:
+                try:
+                    tile = self.game.maze.tile_at(target)
+                    if not getattr(tile, "collision", False):
+                        return list(target)
+                except Exception:
+                    return list(target)
+            return list(door_coord)
+        except Exception:
+            return None
+
+    def _ensure_agents_outside_kitchen(self):
+        """锁门前确保所有 agent 离开厨房区域"""
+        kitchen_tiles = self._get_kitchen_area_tiles()
+        if not kitchen_tiles:
+            return
+        for agent in self.game.agents.values():
+            coord = tuple(agent.coord) if agent.coord else None
+            if coord and coord in kitchen_tiles:
+                moved = self._move_agent_to_location(agent, "living_room")
+                if not moved:
+                    self._move_agent_to_location(agent, "bedroom")
+
     def _get_blocked_location_from_reason(self, block_reason: str) -> str:
         """从阻止原因推断被阻止的位置
 
@@ -1997,10 +2341,10 @@ class HealthSimulation:
 
         if "厨房门" in block_reason or "kitchen" in block_reason.lower():
             return "kitchen_door"
-        if "零食" in block_reason or "snack" in block_reason.lower():
-            return "kitchen"  # 在厨房发现零食没了
+        if "零食" in block_reason or "食物" in block_reason or "snack" in block_reason.lower():
+            return "kitchen"  # 在厨房发现食物没了
         if "手机" in block_reason or "phone" in block_reason.lower():
-            return "bedroom"  # 在卧室发现手机没了
+            return "phone_area"
 
         return None
 
@@ -2010,7 +2354,7 @@ class HealthSimulation:
         with open(log_file, 'w', encoding='utf-8') as f:
             json.dump(day_log, f, ensure_ascii=False, indent=2)
 
-    def _save_checkpoint(self, current_time, intention=None, strategy=None, turnaround_info=None):
+    def _save_checkpoint(self, current_time, intention=None, strategy=None, turnaround_info=None, env_state=None):
         """Save checkpoint for replay visualization
 
         Args:
@@ -2059,13 +2403,24 @@ class HealthSimulation:
                 checkpoint_data["agents"][name]["action"]["event"]["predicate"] = "正在"
                 checkpoint_data["agents"][name]["action"]["event"]["object"] = intention.activity
 
+                # 添加健康数据，便于回放
+                checkpoint_data["agents"][name]["health_data"] = {
+                    "score": self.cumulative_health_scorer.current_score,
+                    "zone": self.cumulative_health_scorer.get_health_status(),
+                    "day": self.current_day,
+                    "tide_phase": self.cumulative_health_scorer.get_tide_phase(),
+                    "discipline": self.discipline_level,
+                }
+
                 # 添加折返信息（如果有）
                 if turnaround_info and name in turnaround_info:
                     checkpoint_data["agents"][name]["turnaround"] = turnaround_info[name]
                 elif intention and getattr(intention, 'discovered_blocked', False):
                     # 从意图对象获取折返信息
                     # 获取被阻位置和折返位置的坐标
-                    blocked_location = self._get_blocked_location_from_reason(intention.block_reason)
+                    blocked_location = getattr(intention, "blocked_location", None)
+                    if not blocked_location:
+                        blocked_location = self._get_blocked_location_from_reason(intention.block_reason)
                     blocked_coord = self._get_semantic_location_coord(blocked_location)
                     redirect_coord = self._get_semantic_location_coord(intention.redirect_location)
 
@@ -2089,6 +2444,25 @@ class HealthSimulation:
         checkpoint_data["time"] = time_str
         checkpoint_data["step"] = self.step_counter  # Use step counter instead of day
         checkpoint_data["stride"] = 30  # 30 minutes per checkpoint
+        checkpoint_data["day"] = self.current_day
+
+        # Add intervention data for replay
+        checkpoint_data["intervention"] = {
+            "level": strategy.level if strategy else 0,
+            "action": strategy.action if strategy else "",
+            "reason": strategy.reason if strategy else "",
+        }
+
+        # Add environment state (post-step) for replay
+        if env_state is not None:
+            checkpoint_data["env_state"] = {
+                "kitchen_locked": bool(env_state.get("kitchen_locked", False)),
+                "food_removed": bool(env_state.get("food_removed", False)),
+                "phone_removed": bool(env_state.get("phone_removed", False)),
+            }
+
+        # Add cumulative health summary for replay
+        checkpoint_data["health_summary"] = self.cumulative_health_scorer.get_summary()
 
         # Save checkpoint file
         checkpoint_file = f"{self.checkpoints_folder}/simulate-{time_str.replace(':', '')}.json"
@@ -2262,7 +2636,7 @@ class HealthSimulation:
                 # Jump to next day's 19:00
                 # 基于逻辑日期计算，凌晨时间归属前一天
                 timer = utils.get_timer()
-                logical_date = timer.get_logical_date()  # 凌晨时间归属前一天
+                logical_date = timer.get_logical_date(day_boundary_hour=7)  # 凌晨时间归属前一天
                 # 下一天 = 逻辑日期 + 1天 的 19:00
                 next_logical_date = logical_date + datetime.timedelta(days=1)
                 next_day = datetime.datetime.combine(next_logical_date, datetime.time(19, 0, 0))

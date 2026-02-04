@@ -239,6 +239,46 @@
         color: #0f766e;
     }
 
+    .trend-chart {
+        width: 100%;
+        height: 120px;
+        display: block;
+    }
+
+    .trend-legend {
+        display: flex;
+        gap: 12px;
+        font-size: 11px;
+        color: #666;
+        justify-content: center;
+        margin-top: 6px;
+    }
+
+    .chart-empty {
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        color: #9ca3af;
+        background: #f8fafc;
+        border-radius: 10px;
+        border: 1px dashed #e5e7eb;
+    }
+
+    .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .legend-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+    }
+
     .agent-profile {
         display: flex;
         flex-direction: column;
@@ -551,28 +591,30 @@
     <!-- Right side: Health sidebar -->
     <div class="health-sidebar">
         <div class="sidebar-section">
-            <h4>模拟进度</h4>
+            <h4>模拟概况</h4>
             <div class="day-display">
                 <span id="current-day">--</span> / <span id="total-days">--</span>
             </div>
             <div class="day-label" style="text-align: center;">天</div>
-        </div>
-
-        <div class="sidebar-section">
-            <h4>健康状态</h4>
+            <hr>
             <div class="score-display">
                 <div class="score-value" id="health-score">75</div>
                 <div class="score-label">累积健康分</div>
                 <span class="zone-badge zone-normal" id="health-zone">NORMAL</span>
             </div>
-            <hr>
-            <div class="tide-phase">
-                <span class="tide-icon" id="tide-icon">🌊</span>
-                <span id="tide-phase">正常期</span>
-            </div>
             <div class="satisfaction-display">
                 <div class="satisfaction-title">满意度</div>
                 <div class="satisfaction-value" id="satisfaction-score">--</div>
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <h4>总体统计</h4>
+            <div id="daily-score-chart" class="trend-chart"></div>
+            <div class="trend-legend">
+                <span class="legend-item"><span class="legend-dot" style="background:#2563eb;"></span>健康</span>
+                <span class="legend-item"><span class="legend-dot" style="background:#f97316;"></span>情绪</span>
+                <span class="legend-item"><span class="legend-dot" style="background:#111111;"></span>当前日</span>
             </div>
         </div>
 
@@ -637,6 +679,7 @@
 
 {% block js_content %}
 <script src='https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.js'></script>
+<script src="{{ url_for('static', filename='vendor/g2plot.min.js') }}"></script>
 {% include 'main_script_health.html' %}
 <script>
 {% for p in persona_names %}

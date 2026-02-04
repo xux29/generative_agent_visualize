@@ -170,24 +170,25 @@ class HealthSimulationVisual(HealthSimulation):
         # Find path to target
         path = self.game.maze.find_path(current_coord, target_coord)
 
-        if path and len(path) > 1:
-            # Stop one tile before target to avoid overlap
-            dest = path[-2] if len(path) > 1 else path[-1]
-            agent.move(dest, path[:-1] if len(path) > 1 else path)
+        if path and len(path) > 0:
+            dest = path[-1]
+            agent.move(dest, path)
 
             self.logger.debug(
                 f"{agent.name} moved toward {target_agent.name}, "
                 f"from {current_coord} to {dest}"
             )
-        elif path and len(path) == 1:
-            # Already adjacent
-            self.logger.debug(f"{agent.name} already adjacent to {target_agent.name}")
         else:
             self.logger.debug(
                 f"No path found for {agent.name} to reach {target_agent.name}"
             )
 
-    def _save_checkpoint(self, current_time, intention=None, strategy=None):
+        # Sync action address for visualization
+        if agent.action and agent.action.event and target_agent.action and target_agent.action.event:
+            if target_agent.action.event.address:
+                agent.action.event.address = target_agent.action.event.address
+
+    def _save_checkpoint(self, current_time, intention=None, strategy=None, env_state=None):
         """Save checkpoint with health data for visualization
 
         Extends parent method to include additional health visualization data.
@@ -234,6 +235,14 @@ class HealthSimulationVisual(HealthSimulation):
             "action": strategy.action if strategy else "",
             "reason": strategy.reason if strategy else "",
         }
+
+        # Add environment state (post-step) for replay
+        if env_state is not None:
+            checkpoint_data["env_state"] = {
+                "kitchen_locked": bool(env_state.get("kitchen_locked", False)),
+                "food_removed": bool(env_state.get("food_removed", False)),
+                "phone_removed": bool(env_state.get("phone_removed", False)),
+            }
 
         # Add cumulative health summary
         checkpoint_data["health_summary"] = self.cumulative_health_scorer.get_summary()

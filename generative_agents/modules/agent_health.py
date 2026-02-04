@@ -50,6 +50,12 @@ class HealthAgentMixin:
             self.phone_status = {"available": True}
             self.kitchen_accessible = True
             self.snacks_removed = False
+            self.food_removed = False
+
+            # 认知状态：被管理者不知道环境变化，直到现场发现
+            self.known_kitchen_locked = False
+            self.known_food_removed = False
+            self.known_phone_removed = False
 
             # 复发机制相关属性（潮汐性变化）
             self.is_in_relapse = False           # 是否处于复发状态
@@ -272,6 +278,10 @@ class HealthAgentMixin:
             self.snacking_events_today = []
             self.phone_duration_today = 0
             self.sleep_info = {}
+            # 重置认知状态（每天归零）
+            self.known_kitchen_locked = False
+            self.known_food_removed = False
+            self.known_phone_removed = False
 
         if hasattr(self, 'is_supervisor') and self.is_supervisor:
             self.today_actions = []
@@ -286,18 +296,17 @@ class HealthAgentMixin:
         """
         constraints = []
 
-        # 检查厨房是否可用
-        if hasattr(self, 'kitchen_accessible') and not self.kitchen_accessible:
+        # 被管理者只根据已知状态判断环境约束
+        if getattr(self, "known_kitchen_locked", False):
             constraints.append("厨房已被锁定，无法进入")
 
         # 检查手机是否可用
-        if hasattr(self, 'phone_status'):
-            if not self.phone_status.get("available", True):
-                constraints.append("手机已被没收，无法使用")
+        if getattr(self, "known_phone_removed", False):
+            constraints.append("手机已被没收，无法使用")
 
-        # 检查零食是否被移除
-        if hasattr(self, 'snacks_removed') and self.snacks_removed:
-            constraints.append("零食已被移除，家里没有零食了")
+        # 检查食物是否被移除（厨房内）
+        if getattr(self, "known_food_removed", False):
+            constraints.append("厨房里的食物已被移除，找不到吃的")
 
         if not constraints:
             return "无特殊限制"
@@ -616,8 +625,9 @@ class HealthAgentMixin:
         self.logger.info(f"{self.name} removed {target_agent.name}'s phone")
 
     def _remove_snacks(self, target_agent):
-        """移走零食"""
+        """移走厨房食物"""
         target_agent.snacks_removed = True
+        target_agent.food_removed = True
         self.logger.info(f"{self.name} removed snacks from {target_agent.name}")
 
     def _lock_kitchen(self, target_agent):
@@ -635,8 +645,7 @@ class HealthAgentMixin:
             if success:
                 self.logger.info(f"{self.name} locked kitchen at '{':'.join(kitchen_addr)}'")
 
-                # 同时更新 Target 的状态（用于 Prompt）
-                target_agent.kitchen_accessible = False
+                # 不直接更新目标认知状态（被管理者未知）
             else:
                 self.logger.warning(f"{self.name} failed to lock kitchen at '{':'.join(kitchen_addr)}'")
 

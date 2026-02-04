@@ -132,6 +132,14 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
         with open(semantic_mapping_path, "r", encoding="utf-8") as f:
             semantic_mapping = json.load(f)
 
+    semantic_locations = {}
+    scenario_config = {}
+    manager_agent_name = None
+    if scenario and scenario in semantic_mapping:
+        scenario_config = semantic_mapping[scenario]
+        semantic_locations = scenario_config.get("semantic_locations", {})
+        manager_agent_name = scenario_config.get("manager_agent")
+
     conversation_file = "conversation.json"
     conversation = {}
     if os.path.exists(os.path.join(checkpoints_folder, conversation_file)):
@@ -147,6 +155,36 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
     if not json_files:
         print(f"No checkpoint files found in {checkpoints_folder}")
         return None
+
+    # Fallback: derive semantic locations from checkpoint spatial tree
+    if not semantic_locations:
+        try:
+            with open(json_files[0], "r", encoding="utf-8") as f:
+                first_checkpoint = json.load(f)
+            spatial_tree = first_checkpoint.get("spatial", {}).get("tree", {})
+            derived_locations = {"kitchen": [], "kitchen_door": []}
+
+            def walk(node, path):
+                if isinstance(node, dict):
+                    for key, value in node.items():
+                        next_path = path + [key]
+                        if key == "厨房":
+                            derived_locations["kitchen"].append(next_path)
+                        if key == "厨房的门":
+                            derived_locations["kitchen_door"].append(next_path)
+                        walk(value, next_path)
+                elif isinstance(node, list):
+                    for item in node:
+                        item_path = path + [item]
+                        if "厨房" in path:
+                            derived_locations["kitchen"].append(item_path)
+                        if item == "厨房的门":
+                            derived_locations["kitchen_door"].append(item_path)
+
+            walk(spatial_tree, [])
+            semantic_locations = derived_locations
+        except Exception as e:
+            print(f"Warning: failed to derive semantic locations from checkpoint: {e}")
 
     persona_init_pos = {}
     all_movement = {}
@@ -170,6 +208,24 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
         "is_health_simulation": True,  # Flag for health template
     }
 
+    # Load daily scores from simulation_state.json if available
+    daily_health_scores = []
+    daily_emotion_scores = []
+    state_file = Path(checkpoints_folder).parent / "simulation_state.json"
+    if state_file.exists():
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                state_data = json.load(f)
+            daily_logs = state_data.get("daily_logs", [])
+            for log in daily_logs:
+                daily_health_scores.append(log.get("health_score"))
+                daily_emotion_scores.append(log.get("emotion_score"))
+        except Exception as e:
+            print(f"Warning: failed to load daily scores from {state_file}: {e}")
+
+    result["daily_health_scores"] = daily_health_scores
+    result["daily_emotion_scores"] = daily_emotion_scores
+
     last_location = {}
 
     # Load maze for pathfinding
@@ -178,6 +234,38 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
         json_data = json.load(f)
         maze = Maze(json_data, None)
 
+    # Static markers for replay (kitchen door, food point)
+    def _marker_coord(addresses):
+        if not addresses:
+            return None
+        address = addresses[0]
+        tiles = maze.get_address_tiles(address)
+        if tiles:
+            return list(tiles)[0]
+        return None
+
+    static_markers = {}
+    if semantic_locations:
+        kitchen_door_addr = semantic_locations.get("kitchen_door", [])
+        if not kitchen_door_addr:
+            kitchen_door_addr = semantic_locations.get("kitchen", [])
+        kitchen_coord = _marker_coord(kitchen_door_addr)
+        if kitchen_coord:
+            static_markers["kitchen_door"] = kitchen_coord
+
+        kitchen_addrs = semantic_locations.get("kitchen", [])
+        preferred = None
+        keywords = ["冰箱", "柜", "食物", "食材", "fridge", "cabinet", "food", "pantry"]
+        for addr in kitchen_addrs:
+            if any(k in part for part in addr for k in keywords):
+                preferred = [addr]
+                break
+        food_coord = _marker_coord(preferred or kitchen_addrs)
+        if food_coord:
+            static_markers["food_point"] = food_coord
+
+    result["static_markers"] = static_markers
+
     # Track health data for visualization
     current_day = 0
     current_health_score = 75.0  # Default initial
@@ -185,6 +273,45 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
     current_intervention_level = 0
     current_intervention_action = ""
     current_tide_phase = "normal"
+    current_kitchen_locked = False
+    current_food_removed = False
+    last_day = None
+
+    def env_state_for_frame(prev_value, next_value, activation_frame, frame_idx):
+        if prev_value == next_value:
+            return next_value
+        if prev_value and not next_value:
+            return False
+        return frame_idx >= activation_frame
+
+    def compute_manager_arrival_frame(agents):
+        if not manager_agent_name:
+            return frames_per_step - 1
+        manager_data = agents.get(manager_agent_name)
+        if not manager_data:
+            return frames_per_step - 1
+
+        if manager_agent_name in last_location:
+            source_coord = last_location[manager_agent_name]["movement"]
+        elif "0" in all_movement and manager_agent_name in all_movement["0"]:
+            source_coord = all_movement["0"][manager_agent_name]["movement"]
+        else:
+            source_coord = manager_data.get("coord")
+
+        target_coord = manager_data.get("coord")
+
+        if isinstance(source_coord, list):
+            source_coord = tuple(source_coord)
+        if isinstance(target_coord, list):
+            target_coord = tuple(target_coord)
+
+        try:
+            path = maze.find_path(source_coord, target_coord)
+        except Exception:
+            return frames_per_step - 1
+        if not path:
+            return frames_per_step - 1
+        return min(frames_per_step - 1, max(0, len(path) - 1))
 
     total_files = len(json_files)
     for file_idx, file_name in enumerate(json_files):
@@ -197,6 +324,10 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
             # Extract health data from checkpoint
             if "day" in json_data:
                 current_day = json_data["day"]
+                if last_day is None or current_day != last_day:
+                    current_kitchen_locked = False
+                    current_food_removed = False
+                    last_day = current_day
 
             if "health_summary" in json_data:
                 health_summary = json_data["health_summary"]
@@ -204,10 +335,46 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
                 current_health_zone = health_summary.get("health_status", current_health_zone)
                 current_tide_phase = health_summary.get("tide_phase", current_tide_phase)
 
+            prev_kitchen_locked = current_kitchen_locked
+            prev_food_removed = current_food_removed
+            next_kitchen_locked = prev_kitchen_locked
+            next_food_removed = prev_food_removed
+
+            checkpoint_env_state = json_data.get("env_state") if isinstance(json_data.get("env_state"), dict) else None
+
             if "intervention" in json_data:
                 intervention = json_data["intervention"]
                 current_intervention_level = intervention.get("level", 0)
                 current_intervention_action = intervention.get("action", "")
+                action_text = (current_intervention_action or "").lower()
+            else:
+                current_intervention_level = 0
+                current_intervention_action = ""
+                action_text = ""
+
+            if checkpoint_env_state is not None:
+                if "kitchen_locked" in checkpoint_env_state:
+                    next_kitchen_locked = bool(checkpoint_env_state.get("kitchen_locked"))
+                if "food_removed" in checkpoint_env_state:
+                    next_food_removed = bool(checkpoint_env_state.get("food_removed"))
+            else:
+                if current_intervention_level == 3:
+                    next_kitchen_locked = True
+                if current_intervention_level == 2:
+                    if "phone" in action_text or "手机" in current_intervention_action:
+                        pass
+                    else:
+                        next_food_removed = True
+
+            activation_kitchen = 0
+            activation_food = 0
+            if not prev_kitchen_locked and next_kitchen_locked:
+                activation_kitchen = compute_manager_arrival_frame(agents)
+            if not prev_food_removed and next_food_removed:
+                activation_food = compute_manager_arrival_frame(agents)
+
+            current_kitchen_locked = next_kitchen_locked
+            current_food_removed = next_food_removed
 
             # Save start datetime
             if len(result["start_datetime"]) < 1:
@@ -220,8 +387,7 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
                     insert_frame0(persona_init_pos, all_movement, agent_name, map_folder)
 
                     # Fill description from semantic_mapping profile
-                    if scenario and scenario in semantic_mapping:
-                        scenario_config = semantic_mapping[scenario]
+                    if scenario_config:
                         target_agent = scenario_config.get("target_agent", "")
                         manager_agent = scenario_config.get("manager_agent", "")
 
@@ -369,6 +535,12 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
                         if step_key not in all_movement:
                             all_movement[step_key] = {}
 
+                        kitchen_locked_frame = env_state_for_frame(
+                            prev_kitchen_locked, current_kitchen_locked, activation_kitchen, i
+                        )
+                        food_removed_frame = env_state_for_frame(
+                            prev_food_removed, current_food_removed, activation_food, i
+                        )
                         movement_data = {
                             "location": current_location,
                             "movement": movement,
@@ -379,6 +551,8 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
                             "tide_phase": current_tide_phase,
                             "intervention_level": current_intervention_level,
                             "intervention_action": current_intervention_action,
+                            "env_kitchen_locked": kitchen_locked_frame,
+                            "env_food_removed": food_removed_frame,
                             "is_turnaround": True,
                             "turnaround_phase": "going" if i < frames_going else ("blocked" if i < frames_going + frames_blocked else "returning")
                         }
@@ -442,6 +616,12 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
                             # Add intervention data
                             movement_data["intervention_level"] = current_intervention_level
                             movement_data["intervention_action"] = current_intervention_action
+                            movement_data["env_kitchen_locked"] = env_state_for_frame(
+                                prev_kitchen_locked, current_kitchen_locked, activation_kitchen, i
+                            )
+                            movement_data["env_food_removed"] = env_state_for_frame(
+                                prev_food_removed, current_food_removed, activation_food, i
+                            )
 
                             all_movement[step_key][agent_name] = movement_data
 

@@ -47,6 +47,7 @@ class Intention:
         self.turnaround_monologue = None  # 折返独白
         self.redirect_activity = None  # 替代活动
         self.redirect_location = None  # 替代位置
+        self.blocked_location = None  # 被阻止的语义位置（如 kitchen_door）
 
     def lock(self):
         """锁定意图，防止并发修改"""
@@ -87,6 +88,7 @@ class Intention:
         if self.discovered_blocked:
             result["discovered_blocked"] = self.discovered_blocked
             result["block_reason"] = self.block_reason
+            result["blocked_location"] = self.blocked_location
             result["turnaround_monologue"] = self.turnaround_monologue
             result["redirect_activity"] = self.redirect_activity
             result["redirect_location"] = self.redirect_location

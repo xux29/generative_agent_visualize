@@ -18,6 +18,9 @@
     let all_movement = {{ all_movement|tojson }};
     const conversation_data = all_movement["conversation"] || {};
     const description_data = all_movement["description"] || {};
+    const dailyHealthScores = {{ daily_health_scores|default([])|tojson }};
+    const dailyEmotionScores = {{ daily_emotion_scores|default([])|tojson }};
+    const staticMarkers = {{ static_markers|default({})|tojson }};
 
     let datetime_options = { weekday: "long", year: "numeric", month: "long", day: "numeric" };
     let start_datetime = new Date(Date.parse({{ start_datetime|tojson }}));
@@ -48,6 +51,7 @@
     let anims_direction;
     let pre_anims_direction;
     let pre_anims_direction_dict = {};
+    let envMarkers = {};
 
     let movement_target = {};
 
@@ -183,6 +187,252 @@
         }
     }
 
+    function getDailyScore(series, dayValue) {
+        if (!Array.isArray(series) || !Number.isFinite(dayValue)) return null;
+        const idx = dayValue - 1;
+        if (idx < 0 || idx >= series.length) return null;
+        const raw = series[idx];
+        if (raw === null || raw === undefined || raw === "") return null;
+        const value = toNumber(raw);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    let overallChart = null;
+    let derivedDailyScores = null;
+    let g2plotLoadPromise = null;
+    const g2plotSources = [
+        "/static/vendor/g2plot.min.js",
+        "https://cdn.jsdelivr.net/npm/@antv/g2plot@2.4.44/dist/g2plot.min.js",
+        "https://unpkg.com/@antv/g2plot@2.4.44/dist/g2plot.min.js",
+        "https://gw.alipayobjects.com/os/antv/pkg/_antv.g2plot-2.4.44/dist/g2plot.min.js"
+    ];
+
+    function loadScriptOnce(src) {
+        return new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = src;
+            script.async = true;
+            script.onload = () => resolve(true);
+            script.onerror = () => reject(new Error(`Failed to load ${src}`));
+            document.head.appendChild(script);
+        });
+    }
+
+    function ensureG2PlotLoaded() {
+        if (typeof G2Plot !== "undefined") {
+            return Promise.resolve(true);
+        }
+        if (g2plotLoadPromise) return g2plotLoadPromise;
+        g2plotLoadPromise = (async () => {
+            for (const src of g2plotSources) {
+                try {
+                    await loadScriptOnce(src);
+                    if (typeof G2Plot !== "undefined") return true;
+                } catch (err) {
+                    continue;
+                }
+            }
+            return false;
+        })();
+        return g2plotLoadPromise;
+    }
+    function hasNumericSeries(series) {
+        if (!Array.isArray(series)) return false;
+        return series.some((v) => Number.isFinite(toNumber(v)));
+    }
+
+    function pickTargetData(stepData) {
+        if (!stepData) return null;
+        let targetData = null;
+        for (const agentName in stepData) {
+            if (agentName === "description" || agentName === "conversation") continue;
+            const profile = agentProfiles[agentName];
+            if (profile && profile.roleLabel === "被管理者") {
+                targetData = stepData[agentName];
+                break;
+            }
+        }
+        if (!targetData) {
+            for (const agentName in stepData) {
+                if (agentName === "description" || agentName === "conversation") continue;
+                targetData = stepData[agentName];
+                break;
+            }
+        }
+        return targetData;
+    }
+
+    function buildDailySeriesFromMovement() {
+        const healthByDay = new Map();
+        const emotionByDay = new Map();
+        const numericSteps = Object.keys(all_movement || {})
+            .filter((key) => /^\d+$/.test(key))
+            .map((key) => Number(key))
+            .sort((a, b) => a - b);
+
+        numericSteps.forEach((stepKey) => {
+            const stepData = all_movement[String(stepKey)];
+            const targetData = pickTargetData(stepData);
+            if (!targetData) return;
+            const dayValue = getDayForFrameStep(stepKey, targetData);
+            if (!Number.isFinite(dayValue)) return;
+            if (!healthByDay.has(dayValue)) {
+                const healthValue = toNumber(targetData.health_score);
+                if (Number.isFinite(healthValue)) {
+                    healthByDay.set(dayValue, healthValue);
+                }
+            }
+            if (!emotionByDay.has(dayValue)) {
+                const emotionValue = extractSatisfactionScore(targetData);
+                if (Number.isFinite(emotionValue)) {
+                    emotionByDay.set(dayValue, emotionValue);
+                }
+            }
+        });
+
+        const maxDay = Math.max(
+            ...Array.from(new Set([...healthByDay.keys(), ...emotionByDay.keys()])),
+            0
+        );
+        const healthSeries = [];
+        const emotionSeries = [];
+        for (let day = 1; day <= maxDay; day += 1) {
+            healthSeries.push(healthByDay.has(day) ? healthByDay.get(day) : null);
+            emotionSeries.push(emotionByDay.has(day) ? emotionByDay.get(day) : null);
+        }
+        return { healthSeries, emotionSeries };
+    }
+
+    function getActiveDailySeries() {
+        if (hasNumericSeries(dailyHealthScores) || hasNumericSeries(dailyEmotionScores)) {
+            return {
+                healthSeries: dailyHealthScores,
+                emotionSeries: dailyEmotionScores
+            };
+        }
+        if (!derivedDailyScores) {
+            derivedDailyScores = buildDailySeriesFromMovement();
+        }
+        return derivedDailyScores;
+    }
+
+    function buildOverallSeries() {
+        const data = [];
+        const { healthSeries, emotionSeries } = getActiveDailySeries();
+        const totalDays = Math.max(healthSeries.length, emotionSeries.length);
+        for (let i = 0; i < totalDays; i += 1) {
+            const day = i + 1;
+            const health = toNumber(healthSeries[i]);
+            if (Number.isFinite(health)) {
+                data.push({ day, value: health, type: "健康" });
+            }
+            const emotion = toNumber(emotionSeries[i]);
+            if (Number.isFinite(emotion)) {
+                data.push({ day, value: emotion, type: "情绪" });
+            }
+        }
+        return data;
+    }
+
+    function renderOverallStatsChart(currentDay) {
+        const container = document.getElementById("daily-score-chart");
+        if (!container) return;
+        const data = buildOverallSeries();
+        if (!data.length) {
+            if (overallChart) {
+                overallChart.destroy();
+                overallChart = null;
+            }
+            container.innerHTML = '<div class="chart-empty">暂无数据</div>';
+            return;
+        }
+        if (typeof G2Plot === "undefined") {
+            ensureG2PlotLoaded().then((loaded) => {
+                if (loaded) {
+                    renderOverallStatsChart(currentDay);
+                } else {
+                    container.innerHTML = '<div class="chart-empty">图表库未加载</div>';
+                }
+            });
+            return;
+        }
+
+        const annotations = [];
+        if (Number.isFinite(currentDay)) {
+            annotations.push({
+                type: "line",
+                start: [currentDay, "min"],
+                end: [currentDay, "max"],
+                style: { stroke: "#111", lineWidth: 1, lineDash: [4, 4] }
+            });
+            const { healthSeries, emotionSeries } = getActiveDailySeries();
+            const healthValue = getDailyScore(healthSeries, currentDay);
+            if (Number.isFinite(healthValue)) {
+                annotations.push({
+                    type: "point",
+                    position: [currentDay, healthValue],
+                    style: { r: 4, fill: "#2563eb", stroke: "#111", lineWidth: 1 }
+                });
+            }
+            const emotionValue = getDailyScore(emotionSeries, currentDay);
+            if (Number.isFinite(emotionValue)) {
+                annotations.push({
+                    type: "point",
+                    position: [currentDay, emotionValue],
+                    style: { r: 4, fill: "#f97316", stroke: "#111", lineWidth: 1 }
+                });
+            }
+        }
+
+        if (!overallChart) {
+            container.innerHTML = "";
+            overallChart = new G2Plot.Line(container, {
+                data,
+                xField: "day",
+                yField: "value",
+                seriesField: "type",
+                smooth: true,
+                autoFit: true,
+                height: 120,
+                padding: [12, 12, 24, 36],
+                color: ["#2563eb", "#f97316"],
+                legend: false,
+                xAxis: {
+                    title: null,
+                    tickLine: null,
+                    label: { style: { fill: "#6b7280" } }
+                },
+                yAxis: {
+                    title: null,
+                    grid: { line: { style: { stroke: "#e5e7eb", lineDash: [4, 4] } } },
+                    label: { style: { fill: "#6b7280" } }
+                },
+                tooltip: { showMarkers: false },
+                annotations
+            });
+            overallChart.render();
+        } else {
+            overallChart.update({ data, annotations });
+        }
+    }
+
+    function updateEnvMarkers(stepData) {
+        if (!stepData || !envMarkers) return;
+        let sample = null;
+        for (const agentName in stepData) {
+            if (agentName === "description" || agentName === "conversation") continue;
+            if (stepData[agentName]) {
+                sample = stepData[agentName];
+                break;
+            }
+        }
+        if (!sample) return;
+        const kitchenLocked = Boolean(sample.env_kitchen_locked);
+        const foodRemoved = Boolean(sample.env_food_removed);
+        if (envMarkers.kitchen_door) envMarkers.kitchen_door.setVisible(kitchenLocked);
+        if (envMarkers.food_point) envMarkers.food_point.setVisible(foodRemoved);
+    }
+
     function extractSatisfactionScore(stepData) {
         if (!stepData) return null;
         const candidates = [
@@ -202,6 +452,25 @@
     function formatScore(value) {
         if (!Number.isFinite(value)) return "--";
         return value.toFixed(1);
+    }
+
+    function containsEmoji(text) {
+        if (!text) return false;
+        return /[\u{1F300}-\u{1FAFF}]/u.test(text);
+    }
+
+    function getActionEmoji(action, hadConversation) {
+        const raw = action || "";
+        if (containsEmoji(raw)) return "";
+        if (raw.includes("🚫") || raw.includes("被阻") || raw.includes("阻止")) return "🚫";
+        if (raw.includes("锁")) return "🔒";
+        if (raw.includes("睡")) return "😴";
+        if (hadConversation || raw.includes("聊天") || raw.includes("对话")) return "💬";
+        if (raw.includes("前往") || raw.includes("去")) return "🚶";
+        if (raw.includes("电视") || raw.includes("追剧")) return "📺";
+        if (raw.includes("零食") || raw.includes("快餐") || raw.includes("汉堡") || raw.includes("炸")) return "🍔";
+        if (raw.includes("吃") || raw.includes("饭") || raw.includes("烹饪") || raw.includes("厨房")) return "🍜";
+        return "🧭";
     }
 
     function isInterventionAgent(agentData, interventionAction) {
@@ -389,19 +658,31 @@
             document.getElementById("current-day").innerText = "--";
         }
         updateTotalDaysUI();
+        renderOverallStatsChart(dayValue);
 
-        // Update health score
-        let healthScore = targetData.health_score;
-        const numericHealthScore = toNumber(healthScore);
-        if (Number.isFinite(numericHealthScore)) {
-            lastKnownHealthScore = numericHealthScore;
+        // Update health score (daily score preferred)
+        const { healthSeries, emotionSeries } = getActiveDailySeries();
+        const dailyHealthScore = getDailyScore(healthSeries, dayValue);
+        if (Number.isFinite(dailyHealthScore)) {
+            lastKnownHealthScore = dailyHealthScore;
+        } else {
+            let healthScore = targetData.health_score;
+            const numericHealthScore = toNumber(healthScore);
+            if (Number.isFinite(numericHealthScore)) {
+                lastKnownHealthScore = numericHealthScore;
+            }
         }
         document.getElementById("health-score").innerText = formatScore(lastKnownHealthScore);
 
-        // Update satisfaction score
-        const satisfactionScore = extractSatisfactionScore(targetData);
-        if (Number.isFinite(satisfactionScore)) {
-            lastKnownSatisfactionScore = satisfactionScore;
+        // Update satisfaction score (daily emotion preferred)
+        const dailyEmotionScore = getDailyScore(emotionSeries, dayValue);
+        if (Number.isFinite(dailyEmotionScore)) {
+            lastKnownSatisfactionScore = dailyEmotionScore;
+        } else {
+            const satisfactionScore = extractSatisfactionScore(targetData);
+            if (Number.isFinite(satisfactionScore)) {
+                lastKnownSatisfactionScore = satisfactionScore;
+            }
         }
         const satisfactionEl = document.getElementById("satisfaction-score");
         if (satisfactionEl) {
@@ -413,12 +694,6 @@
         let zoneEl = document.getElementById("health-zone");
         zoneEl.innerText = ZONE_TRANSLATIONS[zone] || zone;
         zoneEl.className = "zone-badge zone-" + zone.toLowerCase();
-
-        // Update tide phase
-        let tidePhase = targetData.tide_phase || "normal";
-        let tideInfo = TIDE_TRANSLATIONS[tidePhase] || { text: tidePhase, icon: "🌊" };
-        document.getElementById("tide-phase").innerText = tideInfo.text;
-        document.getElementById("tide-icon").innerText = tideInfo.icon;
 
         // Update intervention level
         let level = toNumber(targetData.intervention_level) || 0;
@@ -452,6 +727,8 @@
                 actionEl.title = action;
             }
         }
+
+        updateEnvMarkers(stepData);
     }
 
     function setActive(el, active) {
@@ -1165,6 +1442,25 @@
             pronunciatios[persona_name].alpha = 0.7;
         }
 
+        // Environment markers (kitchen door / food point)
+        const markerDefs = [
+            { key: "kitchen_door", label: "🚫", offset: [-1, 0] },
+            { key: "food_point", label: "🚫", offset: [0, -1] },
+        ];
+        markerDefs.forEach((def) => {
+            if (!staticMarkers || !staticMarkers[def.key]) return;
+            const coord = staticMarkers[def.key];
+            const offset = def.offset || [0, 0];
+            const marker = this.add.text(
+                (coord[0] + offset[0]) * tile_width,
+                (coord[1] + offset[1]) * tile_width,
+                def.label,
+                { font: "20px monospace", fill: "#d11a2a" }
+            ).setDepth(4);
+            marker.setVisible(false);
+            envMarkers[def.key] = marker;
+        });
+
         const firstPersonaName = Object.keys(personas)[0];
         if (firstPersonaName && personas[firstPersonaName]) {
             camera.centerOn(personas[firstPersonaName].x, personas[firstPersonaName].y);
@@ -1274,7 +1570,10 @@
 
                         let act = action;
                         act = act.length > 25 ? act.substring(0, 20)+"..." : act;
-                        pronunciatios[curr_persona_name].setText(curr_persona_name + ": " + act);
+                        const hadConversation = action && action.includes("💬");
+                        const bubbleEmoji = getActionEmoji(action, hadConversation);
+                        const bubbleText = bubbleEmoji ? `${bubbleEmoji} ${act}` : act;
+                        pronunciatios[curr_persona_name].setText(curr_persona_name + ": " + bubbleText);
 
                         // Updating the status of each personas
                         if (description_data[curr_persona_name] && description_data[curr_persona_name]["currently"] !== undefined) {
