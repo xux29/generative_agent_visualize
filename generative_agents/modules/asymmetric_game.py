@@ -567,7 +567,6 @@ class ManagedPersonMind:
             ("偷吃一点零食", "就吃一点点应该没关系吧"),
             ("多玩一会儿手机", "反正最近管得不严"),
             ("跳过运动", "今天累了，休息一天"),
-            ("晚睡一会儿", "就晚一点点"),
         ]
 
         behavior, extra_reason = random.choice(test_behaviors)

@@ -825,6 +825,181 @@
         return `${year}-${month}-${day} ${hour}:${minute}`;
     }
 
+    function escapeHtml(value) {
+        const text = value === null || value === undefined ? "" : String(value);
+        return text
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/\"/g, "&quot;")
+            .replace(/\'/g, "&#39;");
+    }
+
+    function normalizeLocationLabel(label) {
+        if (!label) return "";
+        if (map_folder === "weight-loss-scene" && label.includes("莫雷诺家族")) {
+            return "老两口的家";
+        }
+        return label;
+    }
+
+    function extractLocationFromKey(key) {
+        if (!key || typeof key !== "string") return "";
+        const atIndex = key.lastIndexOf("@");
+        if (atIndex === -1) return "";
+        return key.slice(atIndex + 1).trim();
+    }
+
+    function coerceConversationText(entry) {
+        if (entry === null || entry === undefined) return "";
+        if (typeof entry === "string") return entry;
+        const lines = [];
+        let locationAdded = false;
+        const appendEntry = (key, messages) => {
+            const loc = extractLocationFromKey(key);
+            if (loc && !locationAdded) {
+                lines.push(`地点：${loc}`);
+                locationAdded = true;
+            }
+            if (Array.isArray(messages)) {
+                messages.forEach((pair) => {
+                    if (!Array.isArray(pair) || pair.length < 2) return;
+                    lines.push(`${pair[0]}：${pair[1]}`);
+                });
+            }
+        };
+        if (Array.isArray(entry)) {
+            entry.forEach((group) => {
+                if (!group || typeof group !== "object") return;
+                Object.keys(group).forEach((key) => appendEntry(key, group[key]));
+            });
+        } else if (typeof entry === "object") {
+            Object.keys(entry).forEach((key) => appendEntry(key, entry[key]));
+        } else {
+            lines.push(String(entry));
+        }
+        return lines.join("\n");
+    }
+
+    function parseConversationText(text) {
+        const result = {
+            location: "",
+            dialogue: [],
+            monologue: [],
+            intervention: [],
+            strategy: [],
+            extra: []
+        };
+        if (!text) return result;
+        const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
+        lines.forEach((line) => {
+            if (line.startsWith("地点")) {
+                const value = line.split("：").slice(1).join("：").trim();
+                result.location = value;
+                return;
+            }
+            if (line.includes("（内心想法）")) {
+                result.monologue.push(line.replace("（内心想法）", "").trim());
+                return;
+            }
+            if (line.includes("（采取干预）")) {
+                result.intervention.push(line.replace("（采取干预）", "").trim());
+                return;
+            }
+            if (line.includes("（原因）")) {
+                result.strategy.push(line.replace("（原因）", "").trim());
+                return;
+            }
+            if (line.includes("：")) {
+                result.dialogue.push(line);
+                return;
+            }
+            result.extra.push(line);
+        });
+        return result;
+    }
+
+    function extractTurnaroundNote(stepData) {
+        if (!stepData) return "";
+        const targetData = pickTargetData(stepData);
+        if (!targetData || !targetData.action) return "";
+        const action = targetData.action;
+        const keywords = ["折返", "返回", "改去", "转去", "回去", "离开"];
+        if (keywords.some((kw) => action.includes(kw))) {
+            return `（折返）${action}`;
+        }
+        return "";
+    }
+
+    function renderConversationPanel(timeKey, entry, stepData) {
+        if (!replayUI.convEl) return;
+        const rawText = coerceConversationText(entry);
+        if (!rawText) {
+            replayUI.convEl.innerHTML = '<div class="conv-empty">暂无对话</div>';
+            return;
+        }
+        const parsed = parseConversationText(rawText);
+        const turnaroundNote = extractTurnaroundNote(stepData);
+        if (turnaroundNote) {
+            parsed.monologue.push(turnaroundNote);
+        }
+        const locationLabel = normalizeLocationLabel(parsed.location);
+        const displayKey = formatTimeKey(timeKey);
+
+        const sections = [];
+        const pushSection = (label, items) => {
+            if (!items || !items.length) return;
+            const body = items.map(item => `<div class="conv-item">${escapeHtml(item)}</div>`).join("");
+            sections.push(`
+                <div class="conv-section">
+                    <div class="conv-label">${escapeHtml(label)}</div>
+                    <div class="conv-body">${body}</div>
+                </div>
+            `);
+        };
+
+        pushSection("对话内容", parsed.dialogue);
+        pushSection("内心独白", parsed.monologue);
+        pushSection("干预内容", parsed.intervention);
+        pushSection("策略思考", parsed.strategy);
+        pushSection("补充信息", parsed.extra);
+
+        if (!sections.length) {
+            replayUI.convEl.innerHTML = '<div class="conv-empty">暂无对话</div>';
+            return;
+        }
+
+        const metaParts = [
+            `<span class="conv-pill">${escapeHtml(displayKey)}</span>`
+        ];
+        if (locationLabel) {
+            metaParts.push(`<span class="conv-pill">地点：${escapeHtml(locationLabel)}</span>`);
+        }
+
+        replayUI.convEl.innerHTML = `
+            <div class="conv-header">
+                <div class="conv-title">对话记录</div>
+                <div class="conv-meta">${metaParts.join("")}</div>
+            </div>
+            ${sections.join("")}
+        `;
+    }
+
+    function updateConversationPanel(stepKey, stepData) {
+        if (!replayUI.convEl) return;
+        const timeKey = getTimeKeyForFrameStep(stepKey);
+        if (!timeKey) {
+            replayUI.convEl.innerHTML = '<div class="conv-empty">暂无对话</div>';
+            return;
+        }
+        const entry = conversation_data[timeKey];
+        if (!entry) {
+            replayUI.convEl.innerHTML = '<div class="conv-empty">暂无对话</div>';
+            return;
+        }
+        renderConversationPanel(timeKey, entry, stepData);
+    }
+
     function formatClockTime(dateObj) {
         if (!dateObj) return "--:--";
         const year = dateObj.getFullYear().toString().padStart(4, "0");
@@ -906,6 +1081,7 @@
         setReplayTimeForStep(targetStep);
         updateReplayUIState();
         updateHealthPanel(String(targetStep));
+        updateConversationPanel(targetStep, all_movement[String(targetStep)]);
         snapPersonasToStep(targetStep);
         updateTimelineActive(targetStep);
     }
@@ -1522,6 +1698,7 @@
         updateTotalDaysUI();
         buildTimeline();
         updateHealthPanel(step.toString());
+        updateConversationPanel(step, all_movement[step]);
         bindAgentProfileClicks();
         loadAgentProfiles();
     }
@@ -1545,13 +1722,7 @@
         if (finished || paused) {
             return;
         }
-
-        const conversation_key = getTimeKeyForFrameStep(step);
-        const conversation_key_text = conversation_key ? conversation_data[conversation_key] : null;
-        if (conversation_key_text && conversation_key_text != "" && replayUI.convEl) {
-            const displayKey = formatTimeKey(conversation_key);
-            replayUI.convEl.textContent = `\n${displayKey} 对话记录：\n` + conversation_key_text;
-        }
+        let stepPanelUpdated = false;
 
         // Moving personas
         for (let i = 0; i < Object.keys(personas).length; i++) {
@@ -1582,9 +1753,12 @@
                         document.getElementById("current_action__"+curr_persona_name).innerHTML = action;
                         document.getElementById("target_address__"+curr_persona_name).innerHTML = all_movement[step][curr_persona_name.replace("_", " ")]["location"];
 
-                        // Health-specific: update health panel
-                        updateHealthPanel(step.toString());
-                        updateTimelineActive(step);
+                        if (!stepPanelUpdated) {
+                            updateHealthPanel(step.toString());
+                            updateTimelineActive(step);
+                            updateConversationPanel(step, all_movement[step]);
+                            stepPanelUpdated = true;
+                        }
                     }
 
                     if (execute_count > 0) {

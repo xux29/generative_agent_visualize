@@ -676,6 +676,7 @@ class HealthSimulation:
             intention = None
             strategy = None
             sleep_stop = False
+            is_violation = False
 
             # Step 1: Target generates intention for this time slot
             # 传入 strategy_manager 以支持复发检测（潮汐性机制）
@@ -705,12 +706,14 @@ class HealthSimulation:
                     )
 
             if intention:
+                intention = self._normalize_sleep_intention(intention, timer)
                 self.logger.info(f"[{time_str}] {self.target_name} intends: {intention.activity}")
 
                 # 解析意图的目标位置（优先使用意图自带的，否则推断）
                 target_location = getattr(intention, 'target_location', None)
                 if not target_location:
                     target_location = self._infer_target_location(intention.activity)
+                is_violation = self._is_violation_intention(intention, target_location)
 
                 # 睡眠检测：一旦进入睡眠即结束当天
                 if self._is_sleep_activity(intention):
@@ -748,7 +751,10 @@ class HealthSimulation:
                         "agent": self.target_name,
                         "content": intention.activity,
                         "inner_monologue": intention.inner_monologue,
-                        "target_location": target_location
+                        "target_location": target_location,
+                        "blocked": True,
+                        "blocked_location": blocked_location,
+                        "block_reason": block_reason
                     })
 
                     # 记录折返事件（时间+几分钟）
@@ -809,7 +815,8 @@ class HealthSimulation:
                         "agent": self.target_name,
                         "content": intention.activity,
                         "inner_monologue": intention.inner_monologue,
-                        "target_location": target_location
+                        "target_location": target_location,
+                        "blocked": False
                     })
 
                     # 记录位置轨迹（正常）
@@ -825,6 +832,7 @@ class HealthSimulation:
             pending_env_update = {}
             env_state_next = dict(env_state)
             intervention_success = True
+            strategy_downgraded = False
             if not sleep_stop and hasattr(self.manager_agent, 'evaluate_strategy'):
                 strategy = self.manager_agent.evaluate_strategy(intention, self.target_agent)
 
@@ -855,16 +863,36 @@ class HealthSimulation:
                         f"[{time_str}] V3 Hidden strategy adjusted level: {original_level} -> {strategy.level}"
                     )
 
+                # 非违规行为：强制观察
+                if intention and not is_violation:
+                    if strategy.level != 0:
+                        strategy = Strategy.observe("非违规行为，改为观察")
+
+                # 环境已阻止时减少重复干预；食物已移除后仍尝试则升级锁门
+                if intention and is_violation:
+                    if target_location == "kitchen" and env_state.get("kitchen_locked", False):
+                        strategy = Strategy.observe("厨房已锁，无需干预")
+                    elif target_location == "kitchen" and env_state.get("food_removed", False):
+                        if not level3_used:
+                            strategy = Strategy.lock_space("kitchen", reason="食物已移除仍反复尝试，升级锁门")
+                        else:
+                            strategy = Strategy.observe("食物已移除且已锁门")
+                    elif target_location == "phone_area" and env_state.get("phone_removed", False):
+                        strategy = Strategy.observe("手机已被没收，无需干预")
+
                 # 当天L3/L4不重复
+                original_level = strategy.level
                 strategy = self._adjust_intervention_for_day(strategy, level2_used, level3_used)
+                strategy_downgraded = strategy.level < original_level
+                strategy = self._normalize_strategy_action(strategy, intention)
 
                 self.logger.info(f"[{time_str}] {self.manager_name} decides: Level {strategy.level} - {strategy.action}")
 
                 remove_location = None
                 if strategy.level >= 2:
                     remove_location = self._move_manager_to_item(strategy)
-                    action_text = (strategy.action or "").lower()
-                    action_label = strategy.action or ""
+                    action_text = (getattr(strategy, "raw_action", "") or strategy.action or "").lower()
+                    action_label = getattr(strategy, "raw_action", "") or strategy.action or ""
                     if strategy.level == 2:
                         if "手机" in action_label or "phone" in action_text:
                             pending_env_update["phone_removed"] = True
@@ -880,8 +908,15 @@ class HealthSimulation:
 
                 # Step 3: Execute intervention if needed
                 if strategy.level > 0 and hasattr(self.manager_agent, 'execute_intervention'):
-                    intervention_success = self.manager_agent.execute_intervention(strategy, self.target_agent)
+                    original_level = strategy.level
+                    intervention_success = self.manager_agent.execute_intervention(
+                        strategy,
+                        self.target_agent,
+                        allow_escalation=False
+                    )
                     self.logger.info(f"[{time_str}] Intervention {'succeeded' if intervention_success else 'failed'}")
+                    if strategy.level != original_level:
+                        strategy = self._normalize_strategy_action(strategy, intention)
 
                 # V3: 被管理者观察干预（更新其感知）
                 self.asymmetric_game.managed_mind.observe_intervention(
@@ -890,16 +925,18 @@ class HealthSimulation:
                     was_successful=intervention_success
                 )
 
-                day_log["interventions"].append({
-                    "time": time_str,
-                    "level": strategy.level,
-                    "action": strategy.action,
-                    "reason": strategy.reason,
-                    "succeeded": intervention_success,
-                    # V3: 记录试探边界信息（用于分析）
-                    "was_boundary_test": is_testing_boundary,
-                    "boundary_test_monologue": boundary_test_monologue if is_testing_boundary else None,
-                })
+                if strategy.level > 0:
+                    day_log["interventions"].append({
+                        "time": time_str,
+                        "level": strategy.level,
+                        "action": strategy.action,
+                        "reason": strategy.reason,
+                        "succeeded": intervention_success,
+                        "raw_action": getattr(strategy, "raw_action", None),
+                        # V3: 记录试探边界信息（用于分析）
+                        "was_boundary_test": is_testing_boundary,
+                        "boundary_test_monologue": boundary_test_monologue if is_testing_boundary else None,
+                    })
 
                 # 记录管理者位置
                 if strategy.level > 0:
@@ -1324,7 +1361,11 @@ class HealthSimulation:
             time_str = time_slots[i] if i < len(time_slots) else f"{21 + i//2}:{(i%2)*30:02d}"
             sleep_stop = False
             remove_location = None
+            strategy_downgraded = False
+            is_violation = False
 
+            if intention:
+                intention = self._normalize_sleep_intention(intention, timer)
             if intention and self._is_sleep_activity(intention):
                 sleep_stop = True
                 slept_today = True
@@ -1332,32 +1373,12 @@ class HealthSimulation:
                 intention.target_location = "bedroom"
                 strategy = Strategy.observe("睡觉中")
 
-            if strategy:
-                strategy = self._adjust_intervention_for_day(strategy, level2_used, level3_used)
-
-            # 先处理策略执行，更新环境状态
-            if strategy and strategy.level >= 2:
-                remove_location = self._move_manager_to_item(strategy)
-                action_text = (strategy.action or "").lower()
-                action_label = strategy.action or ""
-                if strategy.level == 2:
-                    if "手机" in action_label or "phone" in action_text:
-                        env_state["phone_removed"] = True
-                    else:
-                        env_state["food_removed"] = True
-                if strategy.level == 3:
-                    env_state["kitchen_locked"] = True
-
-                if strategy.level == 2:
-                    level2_used = True
-                if strategy.level == 3:
-                    level3_used = True
-
             if intention:
                 # 解析意图的目标位置（优先使用意图自带的，否则推断）
                 target_location = getattr(intention, 'target_location', None)
                 if not target_location:
                     target_location = self._infer_target_location(intention.activity)
+                is_violation = self._is_violation_intention(intention, target_location)
 
                 # 检查目标位置是否已被阻止
                 is_blocked = False
@@ -1387,7 +1408,10 @@ class HealthSimulation:
                         "agent": self.target_name,
                         "content": intention.activity,
                         "inner_monologue": intention.inner_monologue,
-                        "target_location": target_location
+                        "target_location": target_location,
+                        "blocked": True,
+                        "blocked_location": blocked_location,
+                        "block_reason": block_reason
                     })
 
                     # 记录折返事件（时间+几分钟）
@@ -1448,7 +1472,8 @@ class HealthSimulation:
                         "agent": self.target_name,
                         "content": intention.activity,
                         "inner_monologue": intention.inner_monologue,
-                        "target_location": target_location
+                        "target_location": target_location,
+                        "blocked": False
                     })
 
                     # 记录位置轨迹（正常）
@@ -1461,19 +1486,61 @@ class HealthSimulation:
                         })
 
             if strategy:
-                # 判断干预合理性：如果意图有违规倾向(compliance_threshold>0)且干预了，则合理
-                is_violation = intention and getattr(intention, 'compliance_threshold', 0) > 0
+                # 非违规行为：强制观察
+                if intention and not is_violation:
+                    if strategy.level != 0:
+                        strategy = Strategy.observe("非违规行为，改为观察")
+
+                # 环境已阻止时减少重复干预；食物已移除后仍尝试则升级锁门
+                if intention and is_violation:
+                    if target_location == "kitchen" and env_state.get("kitchen_locked", False):
+                        strategy = Strategy.observe("厨房已锁，无需干预")
+                    elif target_location == "kitchen" and env_state.get("food_removed", False):
+                        if not level3_used:
+                            strategy = Strategy.lock_space("kitchen", reason="食物已移除仍反复尝试，升级锁门")
+                        else:
+                            strategy = Strategy.observe("食物已移除且已锁门")
+                    elif target_location == "phone_area" and env_state.get("phone_removed", False):
+                        strategy = Strategy.observe("手机已被没收，无需干预")
+
+                original_level = strategy.level
+                strategy = self._adjust_intervention_for_day(strategy, level2_used, level3_used)
+                strategy_downgraded = strategy.level < original_level
+                strategy = self._normalize_strategy_action(strategy, intention)
+
+                # 处理策略执行，更新环境状态
+                if strategy.level >= 2:
+                    remove_location = self._move_manager_to_item(strategy)
+                    action_text = (getattr(strategy, "raw_action", "") or strategy.action or "").lower()
+                    action_label = getattr(strategy, "raw_action", "") or strategy.action or ""
+                    if strategy.level == 2:
+                        if "手机" in action_label or "phone" in action_text:
+                            env_state["phone_removed"] = True
+                        else:
+                            env_state["food_removed"] = True
+                    if strategy.level == 3:
+                        env_state["kitchen_locked"] = True
+
+                    if strategy.level == 2:
+                        level2_used = True
+                    if strategy.level == 3:
+                        level3_used = True
+
+            if strategy:
+                # 判断干预合理性：仅对违规意图干预才算合理
                 reasonability = "reasonable" if (strategy.level > 0 and is_violation) else \
                                 "unnecessary" if (strategy.level > 0 and not is_violation) else \
                                 "preventive"
-                day_log["interventions"].append({
-                    "time": time_str,
-                    "level": strategy.level,
-                    "action": strategy.action,
-                    "reason": strategy.reason,
-                    "succeeded": True,
-                    "reasonability": reasonability,
-                })
+                if strategy.level > 0:
+                    day_log["interventions"].append({
+                        "time": time_str,
+                        "level": strategy.level,
+                        "action": strategy.action,
+                        "reason": strategy.reason,
+                        "succeeded": True,
+                        "reasonability": reasonability,
+                        "raw_action": getattr(strategy, "raw_action", None),
+                    })
 
                 # 记录管理者位置
                 if strategy.level > 0:
@@ -1545,26 +1612,33 @@ class HealthSimulation:
         day_log["agents"][self.target_name] = target_data
 
         # 【累积健康分系统】计算每日变化
-        # 阻止逻辑：任何 Level >= 1 的干预可以阻止违规
-        # 只有 Level 0（纯观察）或无干预时，违规才会生效
+        # 阻止逻辑：有干预且成功 → 违规不计入
         had_violation = False
         unblocked_violations = 0
-        for i, intent in enumerate(intentions):
-            if intent and getattr(intent, 'compliance_threshold', 0) >= 2:
-                matching_inv = day_log["interventions"][i] if i < len(day_log["interventions"]) else None
-                if not matching_inv or matching_inv.get("level", 0) == 0:
-                    # 没有干预或只是观察 → 违规未被阻止
-                    unblocked_violations += 1
+        interventions_by_time = {
+            inv.get("time"): inv for inv in day_log.get("interventions", []) if inv.get("time")
+        }
+        from types import SimpleNamespace
+        for event in day_log.get("events", []):
+            if event.get("type") != "intention" or event.get("blocked"):
+                continue
+            activity = event.get("content", "")
+            target_loc = event.get("target_location")
+            dummy_intention = SimpleNamespace(
+                activity=activity,
+                compliance_threshold=2,
+                target_location=target_loc
+            )
+            if not self._is_violation_intention(dummy_intention, target_loc):
+                continue
+            matching_inv = interventions_by_time.get(event.get("time"))
+            if not matching_inv or matching_inv.get("level", 0) == 0:
+                unblocked_violations += 1
         had_violation = unblocked_violations > 0
 
-        # 诊断日志：显示意图的compliance_threshold分布
-        ct_values = [getattr(intent, 'compliance_threshold', 0) for intent in intentions if intent]
-        violations_total = sum(1 for ct in ct_values if ct >= 2)
         inv_levels = [inv.get("level", 0) for inv in day_log.get("interventions", [])]
         self.logger.info(
-            f"Day {day} Violations: total_ct>=2={violations_total}, "
-            f"unblocked={unblocked_violations}, "
-            f"ct_values={ct_values}, inv_levels={inv_levels}"
+            f"Day {day} Violations: unblocked={unblocked_violations}, inv_levels={inv_levels}"
         )
 
         # 只统计真正干预的（level > 0）
@@ -1749,9 +1823,17 @@ class HealthSimulation:
             return
 
         activity = intention.activity
+        semantic_key = getattr(intention, 'target_location', None)
+
+        if getattr(intention, "discovered_blocked", False):
+            redirect_activity = getattr(intention, "redirect_activity", None)
+            redirect_location = getattr(intention, "redirect_location", None)
+            if redirect_activity:
+                activity = redirect_activity
+            if redirect_location:
+                semantic_key = redirect_location
 
         # 优先使用意图自带的 target_location 或关键词推断
-        semantic_key = getattr(intention, 'target_location', None)
         if not semantic_key:
             semantic_key = self._infer_target_location(activity)
 
@@ -1962,9 +2044,23 @@ class HealthSimulation:
         }
 
         # Analyze events to populate data
+        interventions_by_time = {
+            inv.get("time"): inv for inv in day_log.get("interventions", []) if inv.get("time")
+        }
         for event in day_log.get("events", []):
+            if event.get("type") != "intention":
+                continue
+            if event.get("agent") and event.get("agent") != self.target_name:
+                continue
+            if event.get("blocked"):
+                continue
+
             content = event.get("content", "").lower()
             time_str = event.get("time", "")
+            matching_inv = interventions_by_time.get(time_str)
+            if matching_inv and matching_inv.get("level", 0) > 0 and matching_inv.get("succeeded", True):
+                # 干预成功则不计入实际违规
+                continue
 
             # Phone-related
             if "手机" in content or "phone" in content:
@@ -2009,8 +2105,14 @@ class HealthSimulation:
             if kw in activity:
                 return "living_room"
 
+        # ========== 延迟睡眠（非真正睡觉）-> 客厅 ==========
+        delay_sleep_keywords = ["晚睡", "晚点睡", "再睡", "先不睡", "不想睡"]
+        for kw in delay_sleep_keywords:
+            if kw in activity:
+                return "living_room"
+
         # ========== 优先匹配：睡眠相关 -> 卧室 ==========
-        sleep_keywords = ["睡", "休息", "躺", "床", "准备睡觉", "洗漱", "晚安"]
+        sleep_keywords = ["睡觉", "去睡", "上床", "躺床", "准备睡觉", "洗漱", "晚安"]
         for kw in sleep_keywords:
             if kw in activity:
                 return "bedroom"
@@ -2038,8 +2140,82 @@ class HealthSimulation:
         if getattr(intention, "is_sleep_related", False):
             return True
         activity = getattr(intention, "activity", "") or ""
-        sleep_keywords = ["睡", "休息", "躺", "床", "准备睡觉", "洗漱", "晚安", "sleep", "bed"]
+        # 延迟睡眠的表达不等于睡觉
+        delay_keywords = ["晚睡", "晚点睡", "再睡", "先不睡", "不想睡"]
+        if any(kw in activity for kw in delay_keywords):
+            return False
+        sleep_keywords = ["睡觉", "去睡", "上床", "躺床", "准备睡觉", "洗漱", "晚安", "sleep", "bed"]
         return any(kw in activity for kw in sleep_keywords)
+
+    def _is_violation_intention(self, intention, target_location=None) -> bool:
+        """判断意图是否违规（基于内容/地点关键词，避免误判非违规活动）"""
+        if not intention:
+            return False
+        activity = getattr(intention, "activity", "") or ""
+        activity_lower = activity.lower()
+        if not target_location:
+            target_location = getattr(intention, "target_location", None) or self._infer_target_location(activity)
+
+        forbidden_foods = [f.lower() for f in getattr(self.scenario, "forbidden_foods", []) if f]
+        forbidden_activities = [a.lower() for a in getattr(self.scenario, "forbidden_activities", []) if a]
+
+        if any(word in activity_lower for word in forbidden_foods):
+            return True
+        if any(word in activity_lower for word in forbidden_activities):
+            return True
+
+        food_keywords = ["吃", "零食", "夜宵", "宵夜", "外卖", "甜食", "薯片", "蛋糕", "汉堡", "油炸", "可乐", "翻找", "偷吃"]
+        if target_location == "kitchen" and any(word in activity for word in food_keywords):
+            return True
+
+        phone_keywords = ["手机", "刷手机", "玩手机", "短视频", "游戏", "社交媒体", "上网"]
+        if target_location == "phone_area" or "phone" in self.scenario_name or "手机" in self.scenario_name:
+            if any(word in activity for word in phone_keywords):
+                return True
+
+        # 兜底：如果 compliance_threshold 很高且地点是高风险区域，也视为违规
+        if getattr(intention, "compliance_threshold", 0) >= 2 and target_location in {"kitchen", "phone_area"}:
+            return True
+
+        return False
+
+    def _normalize_sleep_intention(self, intention, timer):
+        """纠正“晚睡一会儿”等不合理意图"""
+        if not intention:
+            return intention
+        activity = getattr(intention, "activity", "") or ""
+        delay_keywords = ["晚睡", "晚点睡", "再睡", "先不睡", "不想睡"]
+        if not any(kw in activity for kw in delay_keywords):
+            return intention
+
+        # 获取目标睡觉时间
+        target_sleep_time = "23:30"
+        if hasattr(self.scenario, "target_profile"):
+            target_sleep_time = self.scenario.target_profile.get("sleep_schedule", {}).get("target_sleep_time", target_sleep_time)
+        sleep_hour, sleep_minute = 23, 30
+        try:
+            sleep_hour, sleep_minute = [int(x) for x in target_sleep_time.split(":")]
+        except Exception:
+            pass
+
+        now = timer.get_date()
+        current_minutes = now.hour * 60 + now.minute
+        sleep_minutes = sleep_hour * 60 + sleep_minute
+
+        # 未到睡觉时间，改为放松
+        if current_minutes < sleep_minutes:
+            intention.activity = "看电视放松"
+            intention.inner_monologue = f"{intention.inner_monologue}（晚点再睡，先放松一下）"
+            intention.target_location = "living_room"
+            intention.is_sleep_related = False
+            return intention
+
+        # 已到睡觉时间，改为睡觉
+        intention.activity = "睡觉"
+        intention.inner_monologue = f"{intention.inner_monologue}（该睡觉了）"
+        intention.target_location = "bedroom"
+        intention.is_sleep_related = True
+        return intention
 
     def _get_bed_address(self):
         """优先获取卧室中的床地址"""
@@ -2107,6 +2283,32 @@ class HealthSimulation:
             strategy.action = "persuade"
             strategy.reason = f"{strategy.reason}（当天已执行过L3，降级为劝说）"
             return strategy
+        return strategy
+
+    def _normalize_strategy_action(self, strategy, intention=None):
+        """确保策略动作与等级一致，保留原始动作"""
+        if not strategy:
+            return strategy
+
+        if not hasattr(strategy, "raw_action"):
+            strategy.raw_action = strategy.action
+
+        if strategy.level == 0:
+            strategy.action = "observe"
+            return strategy
+        if strategy.level == 1:
+            strategy.action = "persuade"
+            return strategy
+        if strategy.level == 2:
+            action_text = (getattr(strategy, "raw_action", "") or "").lower()
+            action_label = getattr(strategy, "raw_action", "") or ""
+            if "phone" in action_text or "手机" in action_label:
+                strategy.action = "remove_phone"
+            else:
+                strategy.action = "remove_food"
+            return strategy
+        if strategy.level == 3:
+            strategy.action = "lock_kitchen"
         return strategy
 
     def _check_env_blocked(self, target_location: str, env_state: dict) -> tuple:
@@ -2478,6 +2680,30 @@ class HealthSimulation:
         with open(conversation_file, 'w', encoding='utf-8') as f:
             json.dump(self.game.conversation, f, ensure_ascii=False, indent=2)
 
+    def _extract_home_label_from_addresses(self, addresses):
+        if not addresses:
+            return None
+        first = addresses[0]
+        if isinstance(first, (list, tuple)) and len(first) >= 2:
+            return first[1]
+        if isinstance(first, str):
+            return first
+        return None
+
+    def _resolve_home_label(self):
+        if self.map_folder == "homeWithRobot":
+            return "家"
+        semantic_locations = getattr(self.scenario, "semantic_locations", {}) or {}
+        for key in ("kitchen", "living_room", "bedroom", "kitchen_door"):
+            label = self._extract_home_label_from_addresses(semantic_locations.get(key))
+            if label:
+                return label
+        for addresses in semantic_locations.values():
+            label = self._extract_home_label_from_addresses(addresses)
+            if label:
+                return label
+        return "家"
+
     def _add_health_conversation(self, time_str, intention, strategy):
         """Add health management interaction as conversation for replay"""
         # Format: {time: [{persons @ location: [[speaker, text], ...]}]}
@@ -2487,11 +2713,8 @@ class HealthSimulation:
         if full_time not in self.game.conversation:
             self.game.conversation[full_time] = []
 
-        # Create conversation entry - use appropriate location based on map
-        if self.map_folder == "homeWithRobot":
-            location = "家"
-        else:
-            location = "莫雷诺家族的房子"
+        # Create conversation entry - use scenario-derived home label
+        location = self._resolve_home_label()
         persons_key = f"{self.target_name} -> {self.manager_name} @ {location}"
 
         conversation_content = [

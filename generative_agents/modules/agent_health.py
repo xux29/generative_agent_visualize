@@ -528,7 +528,7 @@ class HealthAgentMixin:
             self.logger.error(f"{self.name} failed to evaluate strategy: {e}")
             return Strategy.observe("评估失败")
 
-    def execute_intervention(self, strategy, target_agent):
+    def execute_intervention(self, strategy, target_agent, allow_escalation: bool = True):
         """
         执行干预动作
 
@@ -567,9 +567,11 @@ class HealthAgentMixin:
                 return True
             else:
                 self.logger.info(f"{self.name} failed to persuade, escalating...")
+                if not allow_escalation:
+                    return False
                 # 劝说失败，升级到 Level 2
                 strategy.level = 2
-                return self.execute_intervention(strategy, target_agent)
+                return self.execute_intervention(strategy, target_agent, allow_escalation=allow_escalation)
 
         elif strategy.level == 2:
             # Level 2: 移除物品
