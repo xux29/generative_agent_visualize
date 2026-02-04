@@ -200,6 +200,8 @@
     let overallHealthChart = null;
     let overallEmotionChart = null;
     let derivedDailyScores = null;
+    let lastOverallStatsDay = null;
+    let overallStatsRendered = false;
     let g2plotLoadPromise = null;
     const g2plotSources = [
         "/static/vendor/g2plot.min.js",
@@ -717,7 +719,16 @@
             document.getElementById("current-day").innerText = "--";
         }
         updateTotalDaysUI();
-        renderOverallStatsCharts(dayValue);
+        if (!Number.isFinite(dayValue)) {
+            if (!overallStatsRendered) {
+                renderOverallStatsCharts(null);
+                overallStatsRendered = true;
+            }
+        } else if (dayValue !== lastOverallStatsDay) {
+            renderOverallStatsCharts(dayValue);
+            lastOverallStatsDay = dayValue;
+            overallStatsRendered = true;
+        }
 
         // Update health score (daily score preferred)
         const { healthSeries, emotionSeries } = getActiveDailySeries();
