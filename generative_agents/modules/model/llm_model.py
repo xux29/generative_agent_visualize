@@ -87,7 +87,11 @@ class LLMModel:
         wait_time = earliest_time - current_time
         if wait_time > 0:
             print(f"[API Key] 所有 key 都在冷却期，等待 {wait_time:.1f} 秒...")
-            # 不在锁内等待，返回最早的key（调用方会处理）
+            time.sleep(wait_time)
+            # 等待后重置该key的状态
+            self._key_health[earliest_idx]["failures"] = 0
+            self._key_health[earliest_idx]["disabled_until"] = 0
+            print(f"[API Key] Key #{earliest_idx} 冷却期结束，重新启用")
 
         self._api_key_index = (earliest_idx + 1) % len(self._api_keys)
         return earliest_idx
@@ -122,7 +126,9 @@ class LLMModel:
             "401", "403", "unauthorized", "forbidden",
             "invalid api key", "invalid_api_key",
             "authentication", "api key not found",
-            "quota exceeded", "rate limit", "insufficient_quota"
+            "quota exceeded", "rate limit",
+            "insufficient_balance", "insufficient_quota",
+            "balance is insufficient", "account balance"
         ]
         return any(keyword in error_str for keyword in auth_keywords)
 
@@ -340,7 +346,7 @@ class OpenAILLMModel(LLMModel):
         # 存储所有 client，每个 API key 一个
         self._clients = []
         for key in self._api_keys:
-            self._clients.append(OpenAI(api_key=key, base_url=self._base_url))
+            self._clients.append(OpenAI(api_key=key, base_url=self._base_url, timeout=300.0))
         return self._clients[0]  # 默认返回第一个
 
     def _get_next_client(self):
@@ -365,8 +371,10 @@ class OpenAILLMModel(LLMModel):
     def _completion_impl(self, prompt, return_type, key_index, temperature=0.5):
         """实际的 completion 实现"""
         import json
+        import sys
 
         client = self._clients[key_index]
+        sys.stdout.flush()
 
         response = client.chat.completions.create(
             model=self._model,
@@ -404,7 +412,6 @@ class OpenAILLMModel(LLMModel):
             return ret
         return ""
 
-
 class OllamaLLMModel(LLMModel):
     def setup(self, config):
         return None
@@ -426,7 +433,7 @@ class OllamaLLMModel(LLMModel):
             url=f"{self._base_url}/chat/completions",
             headers=headers,
             json=params,
-            stream=False
+            timeout=300
         )
         return response.json()
 
@@ -483,8 +490,169 @@ class OllamaLLMModel(LLMModel):
         return ""
 
 
+class FallbackLLMModel(LLMModel):
+    """包装器模型：当主模型失败时自动切换到备用模型
+
+    使用场景：
+    - 主模型（如Qwen）不可用时，自动切换到备用模型（如MiniMax）
+    - 保持相同的API接口
+    """
+
+    def __init__(self, primary_config, fallback_config):
+        """
+        Args:
+            primary_config: 主模型的配置（包含provider, model, base_url, api_key等）
+            fallback_config: 备用模型的配置（格式同primary_config）
+        """
+        # 先用主配置初始化基类（只初始化公共属性，不调用setup）
+        self._primary_config = primary_config
+        self._fallback_config = fallback_config
+
+        # 从配置中提取公共属性
+        api_keys = primary_config.get("api_keys", [])
+        if api_keys:
+            self._api_keys = api_keys
+        else:
+            self._api_keys = [primary_config["api_key"]]
+
+        self._api_key_index = 0
+        self._api_key_lock = threading.Lock()
+        self._api_key = self._api_keys[0]
+
+        self._base_url = primary_config["base_url"]
+        self._model = primary_config["model"]
+        self._summary = {"total": [0, 0, 0]}
+
+        # 初始化主模型（直接实例化，避免递归调用create_llm_model）
+        primary_provider = primary_config.get("provider", "openai")
+        if primary_provider == "ollama":
+            self._primary_model = OllamaLLMModel(primary_config)
+        else:
+            self._primary_model = OpenAILLMModel(primary_config)
+
+        # 初始化备用模型（直接实例化，避免递归调用create_llm_model）
+        fallback_provider = fallback_config.get("provider", "openai")
+        if fallback_provider == "ollama":
+            self._fallback_model = OllamaLLMModel(fallback_config)
+        else:
+            self._fallback_model = OpenAILLMModel(fallback_config)
+
+        # API key 健康状态追踪（从主模型继承）
+        self._key_health = {}
+        for i in range(len(self._api_keys)):
+            self._key_health[i] = {
+                "failures": 0,
+                "last_failure": 0,
+                "disabled_until": 0,
+                "total_requests": 0,
+                "total_failures": 0,
+            }
+
+        self._handle = None
+        self._enabled = True
+
+    def completion(
+        self,
+        prompt,
+        retry=10,
+        callback=None,
+        failsafe=None,
+        return_type=None,
+        caller="llm_fallback",
+        **kwargs
+    ):
+        """带自动回退的completion方法
+
+        优先使用主模型，失败后自动切换到备用模型
+        """
+        self._summary.setdefault(caller, [0, 0, 0])
+
+        # 先尝试主模型
+        try:
+            result = self._primary_model.completion(
+                prompt=prompt,
+                retry=retry,
+                callback=callback,
+                failsafe=None,  # 主模型失败时不使用failsafe，留给备用模型处理
+                return_type=return_type,
+                caller=caller,
+                **kwargs
+            )
+            if result is not None:
+                self._summary["total"][0] += 1
+                self._summary[caller][0] += 1
+                return result
+        except Exception as e:
+            print(f"[FallbackLLMModel] 主模型 {self._primary_model._model} 调用失败: {e}")
+
+        # 主模型失败，尝试备用模型
+        print(f"[FallbackLLMModel] 切换到备用模型 {self._fallback_model._model}")
+        try:
+            result = self._fallback_model.completion(
+                prompt=prompt,
+                retry=retry,
+                callback=callback,
+                failsafe=failsafe,  # 备用模型使用failsafe
+                return_type=return_type,
+                caller=caller,
+                **kwargs
+            )
+            if result is not None:
+                self._summary["total"][0] += 1
+                self._summary[caller][0] += 1
+                return result
+        except Exception as e:
+            print(f"[FallbackLLMModel] 备用模型 {self._fallback_model._model} 也失败了: {e}")
+
+        # 备用模型也失败
+        pos = 2
+        self._summary["total"][pos] += 1
+        self._summary[caller][pos] += 1
+        return failsafe
+
+    def completion_parallel(self, prompts, retry=10, callbacks=None, failsafes=None,
+                           return_types=None, caller="llm_parallel", max_workers=None, **kwargs):
+        """并行调用（不支持fallback，默认使用主模型）"""
+        return self._primary_model.completion_parallel(
+            prompts=prompts, retry=retry, callbacks=callbacks, failsafes=failsafes,
+            return_types=return_types, caller=caller, max_workers=max_workers, **kwargs
+        )
+
+    def is_available(self):
+        return self._enabled and (self._primary_model.is_available() or self._fallback_model.is_available())
+
+    def get_summary(self):
+        primary_sum = self._primary_model.get_summary()
+        fallback_sum = self._fallback_model.get_summary()
+        return {
+            "primary": primary_sum,
+            "fallback": fallback_sum,
+            "combined": self._summary
+        }
+
+    def disable(self):
+        self._enabled = False
+        self._primary_model.disable()
+        self._fallback_model.disable()
+
+
 def create_llm_model(llm_config):
-    """Create llm model"""
+    """Create llm model
+
+    如果配置中包含 fallback 字段，则自动创建支持自动回退的模型
+    """
+
+    # 检查是否有 fallback 配置
+    if "fallback" in llm_config and llm_config["fallback"]:
+        fallback_cfg = llm_config["fallback"]
+        # 确保 fallback 也有 provider 字段
+        if "provider" not in fallback_cfg:
+            # 如果 fallback 没有指定 provider，默认使用 openai
+            fallback_cfg["provider"] = "openai"
+        print(f"[create_llm_model] 检测到 fallback 配置，创建 FallbackLLMModel")
+        print(f"  主模型: {llm_config['provider']}/{llm_config.get('model', 'unknown')}")
+        print(f"  备用模型: {fallback_cfg.get('provider', 'openai')}/{fallback_cfg.get('model', 'unknown')}")
+        return FallbackLLMModel(llm_config, fallback_cfg)
 
     if llm_config["provider"] == "ollama":
         return OllamaLLMModel(llm_config)
@@ -495,4 +663,3 @@ def create_llm_model(llm_config):
         raise NotImplementedError(
             "llm provider {} is not supported".format(llm_config["provider"])
         )
-    return None

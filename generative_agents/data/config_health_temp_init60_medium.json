@@ -1,0 +1,55 @@
+{
+  "agent": {
+    "percept": {
+      "mode": "box",
+      "vision_r": 8,
+      "att_bandwidth": 8
+    },
+    "schedule": {
+      "max_try": 5,
+      "diversity": 5
+    },
+    "think": {
+      "llm": {
+        "provider": "openai",
+        "model": "MiniMax/MiniMax-M2.7-highspeed",
+        "base_url": "https://api.minimaxi.com/v1",
+        "api_key": "sk-cp-EYQK1y_p88zVoq7KRcINzqx2gjh_8l7YPkDYhxFQ7lidoeGvpMXifAhLkFYotr8ZF4zMgdkYI4ELKKhURPauKEGlrd6eXu2LheD6FMUJvdAJBi-iRQrM4LU"
+      },
+      "interval": 1000,
+      "poignancy_max": 150
+    },
+    "chat_iter": 4,
+    "associate": {
+      "embedding": {
+        "provider": "openai",
+        "model": "BAAI/bge-m3",
+        "base_url": "https://api.minimaxi.com/v1",
+        "api_key": "sk-cp-EYQK1y_p88zVoq7KRcINzqx2gjh_8l7YPkDYhxFQ7lidoeGvpMXifAhLkFYotr8ZF4zMgdkYI4ELKKhURPauKEGlrd6eXu2LheD6FMUJvdAJBi-iRQrM4LU"
+      },
+      "retention": 8
+    }
+  },
+  "health_simulation": {
+    "time_range": {
+      "start_hour": 19,
+      "end_hour": 2
+    },
+    "total_days": 90,
+    "cumulative_health": {
+      "warning_line": 30,
+      "initial_scores": [
+        60,
+        75,
+        90
+      ],
+      "discipline_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "note": "累积健康分系统（2026-01-23会议设计）：初始分+每日增减，警戒线30分"
+    },
+    "note": "阶段现在基于行为数据动态检测，而非固定天数定义。参见 strategy.py 中的 RelationshipPhase 和 LongTermStrategyManager"
+  }
+}

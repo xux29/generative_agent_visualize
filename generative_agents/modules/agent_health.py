@@ -1013,6 +1013,20 @@ class HealthAgentMixin:
         if sleep_schedule:
             target_sleep_time = sleep_schedule.get("target_sleep_time", "23:30")
 
+        # 获取当前场景可用语义位置（限制LLM输出，避免后续逐条位置兜底调用）
+        available_locations = []
+        try:
+            from modules.scenario_config import get_agent_scenario
+            scenario = get_agent_scenario(self.name)
+            if scenario and getattr(scenario, "semantic_locations", None):
+                available_locations = list(scenario.semantic_locations.keys())
+        except Exception:
+            available_locations = []
+
+        # 兜底，保证至少有常用位置，避免空白名单
+        if not available_locations:
+            available_locations = ["living_room", "kitchen", "bedroom"]
+
         try:
             output = self.completion(
                 "health_generate_intention_batch",
@@ -1026,6 +1040,7 @@ class HealthAgentMixin:
                 behavior_tendency=behavior_tendency,
                 is_in_relapse=self.is_in_relapse,
                 target_sleep_time=target_sleep_time,
+                available_locations=available_locations,
             )
 
             if isinstance(output, list):
@@ -1078,7 +1093,8 @@ class HealthAgentMixin:
                 "time": time_str,
                 "activity": intention.activity,
                 "compliance_threshold": intention.compliance_threshold,
-                "inner_monologue": intention.inner_monologue
+                "inner_monologue": intention.inner_monologue,
+                "target_location": getattr(intention, "target_location", None)
             })
 
         # 获取被监督者档案
@@ -1114,6 +1130,8 @@ class HealthAgentMixin:
                     level = item.get("level", 0)
                     action = item.get("action", "观察")
                     reason = item.get("reason", "")
+                    predicted_blocked = item.get("predicted_blocked", False)
+                    turnaround_data = item.get("turnaround_if_blocked", None)
 
                     # 创建Strategy对象
                     if level == 0:
@@ -1126,6 +1144,10 @@ class HealthAgentMixin:
                         strategy = Strategy.lock_space("kitchen", reason)
                     else:
                         strategy = Strategy.observe(reason)
+
+                    # 添加预生成的折返信息（用于batch模式优化）
+                    strategy.predicted_blocked = predicted_blocked
+                    strategy.turnaround_if_blocked = turnaround_data
 
                     strategies.append(strategy)
                 return strategies

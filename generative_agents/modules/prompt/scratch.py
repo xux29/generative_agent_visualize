@@ -5,7 +5,7 @@ import re
 from string import Template
 from pydantic import BaseModel
 from collections import namedtuple
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from modules import utils
 from modules.memory import Event
 
@@ -1045,7 +1045,8 @@ class Scratch:
                                                 health_status, forbidden_activities,
                                                 self_discipline, environment_constraints,
                                                 behavior_tendency, is_in_relapse,
-                                                target_sleep_time="23:30"):
+                                                target_sleep_time="23:30",
+                                                available_locations=None):
         """
         批量生成一整天所有时间点的意图（性能优化）
 
@@ -1060,6 +1061,7 @@ class Scratch:
             behavior_tendency: 行为倾向
             is_in_relapse: 是否复发
             target_sleep_time: 目标睡眠时间
+            available_locations: 场景可用语义位置白名单
         """
         relapse_str = "是（正处于复发期，冲动强烈）" if is_in_relapse else "否"
         tendency_map = {
@@ -1072,6 +1074,18 @@ class Scratch:
 
         # 构建时间点字符串
         time_slots_str = ", ".join(time_slots)
+        location_keys = available_locations or ["living_room", "kitchen", "bedroom"]
+        location_list_str = ", ".join(location_keys)
+        location_rules_lines = []
+        if "living_room" in location_keys:
+            location_rules_lines.append('- 看电视、聊天、放松 -> "living_room"')
+        if "kitchen" in location_keys:
+            location_rules_lines.append('- 吃东西、找食物 -> "kitchen"')
+        if "bedroom" in location_keys:
+            location_rules_lines.append('- 睡觉、休息 -> "bedroom"')
+        if "phone_area" in location_keys:
+            location_rules_lines.append('- 手机相关活动 -> "phone_area"')
+        location_rules = "\n".join(location_rules_lines) if location_rules_lines else "- 使用最匹配的可用位置"
 
         prompt = self.build_prompt(
             "health_generate_intention_batch",
@@ -1093,6 +1107,8 @@ class Scratch:
                 "is_in_relapse": relapse_str,
                 "time_slots": time_slots_str,
                 "target_sleep_time": target_sleep_time,
+                "available_locations": location_list_str,
+                "location_rules": location_rules,
             }
         )
 
@@ -1110,6 +1126,7 @@ class Scratch:
             res: List[IntentionItem]
 
         # 生成默认的failsafe
+        default_location = "living_room" if "living_room" in location_keys else location_keys[0]
         failsafe = [
             {
                 "time_slot": i,
@@ -1118,7 +1135,7 @@ class Scratch:
                 "duration": 30,
                 "compliance_threshold": 1,
                 "inner_monologue": "我应该休息",
-                "target_location": "living_room",
+                "target_location": default_location,
                 "is_sleep_related": False
             }
             for i in range(num_slots)
@@ -1216,7 +1233,7 @@ class Scratch:
         """
         # 构建意图列表字符串
         intentions_str = "\n".join([
-            f"- [{item['time']}] 意图: {item['activity']} (遵守难度: {item['compliance_threshold']}, 内心独白: {item['inner_monologue']})"
+            f"- [{item['time']}] 意图: {item['activity']} (位置: {item.get('target_location') or '未指定'}, 遵守难度: {item['compliance_threshold']}, 内心独白: {item['inner_monologue']})"
             for item in intentions_list
         ])
 
@@ -1237,12 +1254,20 @@ class Scratch:
             }
         )
 
+        class TurnaroundItem(BaseModel):
+            turnaround_monologue: str
+            redirect_activity: str
+            redirect_location: str
+            emotional_reaction: str
+
         class StrategyItem(BaseModel):
             time_slot: int
             time: str
             level: int
             action: str
             reason: str
+            predicted_blocked: bool = False
+            turnaround_if_blocked: Optional[TurnaroundItem] = None
 
         class BatchStrategyResponse(BaseModel):
             res: List[StrategyItem]
@@ -1254,7 +1279,9 @@ class Scratch:
                 "time": item.get("time", f"{21 + i//2}:{(i%2)*30:02d}"),
                 "level": 0,
                 "action": "观察",
-                "reason": "行为正常，无需干预"
+                "reason": "行为正常，无需干预",
+                "predicted_blocked": False,
+                "turnaround_if_blocked": None
             }
             for i, item in enumerate(intentions_list)
         ]
@@ -1266,7 +1293,14 @@ class Scratch:
                     "time": item.time,
                     "level": item.level,
                     "action": item.action,
-                    "reason": item.reason
+                    "reason": item.reason,
+                    "predicted_blocked": item.predicted_blocked,
+                    "turnaround_if_blocked": {
+                        "turnaround_monologue": item.turnaround_if_blocked.turnaround_monologue,
+                        "redirect_activity": item.turnaround_if_blocked.redirect_activity,
+                        "redirect_location": item.turnaround_if_blocked.redirect_location,
+                        "emotional_reaction": item.turnaround_if_blocked.emotional_reaction
+                    } if item.turnaround_if_blocked else None
                 }
                 for item in response
             ]

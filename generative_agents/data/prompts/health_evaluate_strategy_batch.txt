@@ -20,13 +20,21 @@ $forbidden_activities
 【今日被监督者的所有意图】
 $intentions_list
 
+【环境状态】
+- 厨房初始状态：未锁定
+- 食物初始状态：未移除
+- 手机初始状态：未移除
+
 【干预级别说明】
 - Level 0：观察，不干预（行为正常，这是默认选项）
 - Level 1：语言劝导，提醒健康风险（温和提醒）
 - Level 2：移除诱惑物品（拿走手机/零食）
 - Level 3：锁定空间（锁定厨房/设备间）
 
-请为每个意图评估最合适的干预策略。
+【折返机制说明】
+当意图目标位置是厨房且存在违规意图时，需要预测：
+1. predicted_blocked: 预测这次意图是否会被环境阻止（kitchen_locked=true 或 food_removed=true 时）
+2. turnaround_if_blocked: 如果被阻止，预测被监督者的折返行为（内心独白、替代活动、情绪反应）
 
 【核心原则——必须遵守】
 1. Level 0（不干预）是默认选择！只在检测到明确违规意图时才升级
@@ -42,6 +50,22 @@ $intentions_list
 5. 不要过度干预！过度干预会引发被监督者的抵触情绪和不信任
 6. Level 2/3 干预后，对后续时间点有持续效果（物品已移除/空间已锁定），不需要重复
 
+【折返预测规则】
+当检测到违规意图（compliance_threshold >= 2）且目标是厨房时：
+1. 如果厨房还未被锁定（kitchen_locked=false），预测"predicted_blocked": false
+2. 如果厨房已被锁定（kitchen_locked=true），预测"predicted_blocked": true，并生成折返内容
+3. 如果食物已被移除（food_removed=true），被监督者可能会尝试其他方式获取食物
+
+【折返内容生成规则】
+折返独白应体现：
+- 沮丧/无奈的情感（"但是...?"）
+- 自律程度相关的心理（低自律找借口，高自律更容易接受现实）
+- 合理的替代活动
+
+情绪反应选项：resigned（认命）、frustrated（沮丧）、accepting（接受）、rebellious（叛逆）
+
+请为每个意图评估最合适的干预策略：
+
 请以JSON格式返回所有策略评估：
 {
   "res": [
@@ -55,16 +79,25 @@ $intentions_list
     {
       "time_slot": 1,
       "time": "19:30",
-      "level": 0,
-      "action": "observe",
-      "reason": "行为正常"
+      "level": 2,
+      "action": "remove_snack",
+      "reason": "检测到翻找零食意图，移除诱惑物品",
+      "predicted_blocked": false,
+      "turnaround_if_blocked": null
     },
     {
       "time_slot": 2,
       "time": "20:00",
-      "level": 1,
-      "action": "persuade",
-      "reason": "检测到翻找零食意图，温和提醒"
+      "level": 3,
+      "action": "lock_kitchen",
+      "reason": "厨房已移除食物仍尝试进入，升级锁门",
+      "predicted_blocked": true,
+      "turnaround_if_blocked": {
+        "turnaround_monologue": "想进去找点吃的，但是厨房锁了。算了，只能去客厅看会儿电视了。",
+        "redirect_activity": "去客厅看电视",
+        "redirect_location": "living_room",
+        "emotional_reaction": "resigned"
+      }
     }
   ]
 }

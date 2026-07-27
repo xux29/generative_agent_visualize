@@ -32,12 +32,13 @@ $environment_constraints
 - 睡眠相关意图的is_sleep_related必须设为true
 - 一旦进入睡眠状态，后续时间点都应保持睡眠
 
+【可用位置——必须严格使用这些值】
+target_location 只允许使用以下值之一（禁止输出列表外值）：
+$available_locations
+
 【活动与位置对应规则——严格遵守】
-- 看电视、看节目、娱乐放松 → target_location: "living_room" 或 "entertainment"
-- 吃东西、找食物、做饭、找零食 → target_location: "kitchen" 或 "snacks_area"
-- 休息、睡觉、躺下、准备睡觉 → target_location: "bedroom"
-- 聊天、闲坐、读书 → target_location: "living_room"
-- 【禁止】看电视时不要选择kitchen
+$location_rules
+- 【禁止】看电视时不要选择kitchen（若kitchen存在）
 
 【正常活动示例（非违规）】
 看电视、听广播、听音乐、看书读报、散步、和家人聊天、回忆往事、
@@ -57,7 +58,7 @@ $environment_constraints
 5. 复发状态下，冲动会更强烈
 6. compliance_threshold: 0=完全正常活动, 1=轻微违规倾向, 2=中度违规, 3=严重违规
 7. 23:00后必须开始准备睡觉，不能继续看电视或其他活动
-8. 每个意图必须包含target_location字段
+8. 每个意图必须包含target_location字段，且值必须来自 $available_locations
 
 请以JSON格式返回所有时间点的意图：
 {

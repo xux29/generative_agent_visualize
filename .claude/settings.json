@@ -1,0 +1,51 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/dev/null cat:*)",
+      "Bash(KMP_DUPLICATE_LIB_OK=TRUE conda run -n generative_agents_cn python start_health_simulation.py --scenario diabetes --days 1 --initial-health 90 --discipline high --batch --scoring nonlinear)",
+      "Bash(ls -lt E:/data/pythoncode/GenerativeAgentsCN/generative_agents/results/health/diabetes/init*_20260401_18*/day_*.json)",
+      "Bash(ls -lt results/health/diabetes/init60_high_20260401_182911/day_*.json)",
+      "Bash(ls -lt results/health/diabetes/init*_20260401_*/day_*.json)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c \":*)",
+      "Bash(ls -la results/csv/health_analysis_diabetes_*20260401*.csv)",
+      "Bash(/dev/null cp:*)",
+      "Bash(mkdir -p ../../可视化)",
+      "Bash(cp results/csv/health_analysis_diabetes_init90_*20260401_213340*.csv ../../可视化/ 2)",
+      "Bash(/dev/null ls:*)",
+      "Bash(cmd /c test_api_keys.bat)",
+      "Bash(cmd.exe /c \"chcp 65001 >nul && set PYTHONIOENCODING=utf-8 && conda run -n generative_agents_cn python test_api_keys.py\")",
+      "Bash(conda config:*)",
+      "Bash(CONDA_NO_PLUGINS=true timeout 120 conda run -n generative_agents_cn python test_api_keys.py)",
+      "Bash(ls e:/data/pythoncode/GenerativeAgentsCN/generative_agents/results/health/diabetes/*/*.json)",
+      "Bash(ls \"e:/data/pythoncode/GenerativeAgentsCN/generative_agents/results/csv/\"*20260401*.csv)",
+      "Bash(conda run:*)",
+      "Bash(pip install:*)",
+      "Bash(conda activate:*)",
+      "Bash(pip show:*)",
+      "Bash(/d/software/anaconda/envs/generative_agents_cn/python.exe run_9_experiments.py)",
+      "Bash(/d/software/anaconda/envs/generative_agents_cn/python.exe -c \":*)",
+      "Bash(/d/software/anaconda/envs/generative_agents_cn/python.exe start_health_simulation.py --scenario diabetes --days 45 --run-all --batch --scoring nonlinear --parallel 11)",
+      "Bash(/d/software/anaconda/envs/generative_agents_cn/python.exe start_health_simulation.py --scenario diabetes --days 5 --initial-health 90 --discipline high --batch --scoring nonlinear)",
+      "Bash(ps -p 1032 -o pid,ppid,pcpu,pmem,etime,command)",
+      "Bash(wmic process:*)",
+      "Read(//proc/511/**)",
+      "Read(//proc/**)",
+      "Bash(/d/software/anaconda/envs/generative_agents_cn/python.exe start_health_simulation.py --scenario diabetes --days 1 --initial-health 90 --discipline high --batch --scoring nonlinear)",
+      "Bash(/d/software/anaconda/envs/generative_agents_cn/python.exe -c ':*)",
+      "Read(//e/data/pythoncodeGenerativeAgentsCN/**)",
+      "Bash(D:/software/anaconda/envs/generative_agents_cn/python.exe generative_agents/start_health_simulation.py --scenario diabetes --initial-health 75 --discipline low --days 90)",
+      "Bash(D:/software/anaconda/envs/generative_agents_cn/python.exe generative_agents/start_health_simulation.py --scenario diabetes --initial-health 75 --discipline medium --days 90)",
+      "Bash(D:/software/anaconda/envs/generative_agents_cn/python.exe generative_agents/start_health_simulation.py --scenario diabetes --initial-health 75 --discipline high --days 90)",
+      "Bash(D:/software/anaconda/envs/generative_agents_cn/python.exe start_health_simulation.py --scenario diabetes --initial-health 75 --discipline low --days 90)",
+      "Bash(D:/software/anaconda/envs/generative_agents_cn/python.exe start_health_simulation.py --scenario diabetes --initial-health 75 --discipline medium --days 90)",
+      "Bash(D:/software/anaconda/envs/generative_agents_cn/python.exe start_health_simulation.py --scenario diabetes --initial-health 75 --discipline high --days 90)",
+      "Bash(D:/software/anaconda/envs/generative_agents_cn/python.exe start_health_simulation.py --scenario diabetes --initial-health 75 --discipline low --days 90 --batch)",
+      "Bash(D:/software/anaconda/envs/generative_agents_cn/python.exe start_health_simulation.py --scenario diabetes --initial-health 75 --discipline medium --days 90 --batch)",
+      "Bash(D:/software/anaconda/envs/generative_agents_cn/python.exe start_health_simulation.py --scenario diabetes --initial-health 75 --discipline high --days 90 --batch)",
+      "Bash(D:/software/anaconda/envs/generative_agents_cn/python.exe analyze_health.py --scenario diabetes --results-dir results/health/diabetes --output-dir results/csv)"
+    ],
+    "additionalDirectories": [
+      "e:\\data\\pythoncode\\GenerativeAgentsCN"
+    ]
+  }
+}

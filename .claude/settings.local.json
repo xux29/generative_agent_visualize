@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(python:*)",
+      "Bash(D:/software/anaconda/envs/generative_agents_cn/python.exe analyze_health.py --help)",
+      "Bash(D:/software/anaconda/envs/generative_agents_cn/python.exe analyze_health.py --scenario diabetes --run init90_high_20260329_231924)",
+      "Bash(ls \"e:/data/pythoncode/GenerativeAgentsCN/generative_agents/results/csv/\"*init90_high_20260329_231924*)",
+      "Bash(ls e:/data/pythoncode/GenerativeAgentsCN/generative_agents/results/health/diabetes/init90_low_20260330_093113/day_*.json)",
+      "Bash(for i:*)",
+      "Bash(do echo:*)",
+      "Read(//e/data/pythoncode/GenerativeAgentsCN/generative_agents/results/health/diabetes/init90_low_20260330_093113/**)",
+      "Bash(done)",
+      "Bash(ls -lt E:/data/pythoncode/GenerativeAgentsCN/generative_agents/results/health/diabetes/init*_20260330_1716*)",
+      "Bash(exp_dir=E:/data/pythoncode/GenerativeAgentsCN/generative_agents/results/health/diabetes/init90_low_20260330_171648 ls $exp_dir/day_*.json)",
+      "Read(//e/data/pythoncode/GenerativeAgentsCN/$exp_dir/**)",
+      "Bash(PYTHONUNBUFFERED=1 /d/software/anaconda/envs/generative_agents_cn/python.exe -u start_health_simulation.py --scenario diabetes --days 90 --initial-health 60 --discipline low --batch --scoring nonlinear)"
+    ]
+  }
+}

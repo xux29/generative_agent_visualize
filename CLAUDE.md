@@ -27,6 +27,7 @@ pip install -r requirements.txt
 
 ### Running Simulations
 ```bash
+conda activate generative_agents_cn
 cd generative_agents
 
 # Start new simulation

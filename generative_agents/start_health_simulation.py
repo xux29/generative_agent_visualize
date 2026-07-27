@@ -39,6 +39,9 @@ from modules.strategy import Strategy, StrategyManager, LongTermStrategyManager
 from modules.asymmetric_game import AsymmetricGameEngine, ManagerGoalType
 from modules.intention import Intention
 
+# 用于模拟完成后自动分析结果
+import analyze_health
+
 
 class HealthSimulation:
     """Health Management Simulation Engine
@@ -55,7 +58,8 @@ class HealthSimulation:
                  days=90, verbose="info",
                  initial_health: int = 75,
                  discipline_level: str = "medium",
-                 resume_mode: bool = False):
+                 resume_mode: bool = False,
+                 scoring_mode: str = "linear"):
         """初始化健康模拟
 
         Args:
@@ -68,6 +72,7 @@ class HealthSimulation:
             initial_health: 初始健康分（60/75/90）
             discipline_level: 自律程度（high/medium/low）
             resume_mode: 是否为恢复模式（True时查找最新运行目录，而非创建新目录）
+            scoring_mode: 评分模式（linear/nonlinear）
         """
         self.scenario_name = scenario_name
         self.days = days
@@ -77,6 +82,7 @@ class HealthSimulation:
         # 新增：累积健康分参数
         self.initial_health = initial_health
         self.discipline_level = discipline_level
+        self.scoring_mode = scoring_mode  # 评分模式
 
         # Load scenario configuration
         self.scenario = get_scenario_config(scenario_name)
@@ -169,17 +175,29 @@ class HealthSimulation:
             target_personality=target_personality
         )
 
-        # 累积健康分计算器（核心新系统 - 非线性版本）
-        self.cumulative_health_scorer = NonlinearHealthScorer(
-            initial_score=self.initial_health,
-            discipline_level=self.discipline_level,
-            scenario=strategy_scenario
-        )
-        self.logger.info(
-            f"Nonlinear Health System: initial={self.initial_health}, "
-            f"discipline={self.discipline_level}, "
-            f"warning_line={NonlinearHealthScorer.WARNING_LINE}"
-        )
+        # 累积健康分计算器（根据scoring_mode选择线性或非线性）
+        if self.scoring_mode == "nonlinear":
+            self.cumulative_health_scorer = NonlinearHealthScorer(
+                initial_score=self.initial_health,
+                discipline_level=self.discipline_level,
+                scenario=strategy_scenario
+            )
+            self.logger.info(
+                f"Nonlinear Health System: initial={self.initial_health}, "
+                f"discipline={self.discipline_level}, "
+                f"warning_line={NonlinearHealthScorer.WARNING_LINE}"
+            )
+        else:
+            self.cumulative_health_scorer = CumulativeHealthScorer(
+                initial_score=self.initial_health,
+                discipline_level=self.discipline_level,
+                scenario=strategy_scenario
+            )
+            self.logger.info(
+                f"Linear Health System: initial={self.initial_health}, "
+                f"discipline={self.discipline_level}, "
+                f"warning_line={CumulativeHealthScorer.WARNING_LINE}"
+            )
 
     def _setup_agent_config(self):
         """Setup configuration for only the required agents"""
@@ -472,6 +490,7 @@ class HealthSimulation:
         state["cumulative_health"] = self.cumulative_health_scorer.to_dict()
         state["initial_health"] = self.initial_health
         state["discipline_level"] = self.discipline_level
+        state["scoring_mode"] = self.scoring_mode  # 保存评分模式
 
         # Save state file
         with open(self.state_file, 'w', encoding='utf-8') as f:
@@ -560,11 +579,18 @@ class HealthSimulation:
 
             # 恢复累积健康分状态
             if "cumulative_health" in state:
-                self.cumulative_health_scorer = NonlinearHealthScorer.from_dict(
-                    state["cumulative_health"]
-                )
+                # 根据保存的scoring_mode恢复正确的scorer类型
+                saved_scoring_mode = state.get("scoring_mode", "linear")
+                if saved_scoring_mode == "nonlinear":
+                    self.cumulative_health_scorer = NonlinearHealthScorer.from_dict(
+                        state["cumulative_health"]
+                    )
+                else:
+                    self.cumulative_health_scorer = CumulativeHealthScorer.from_dict(
+                        state["cumulative_health"]
+                    )
                 self.logger.info(
-                    f"Restored cumulative health: score={self.cumulative_health_scorer.current_score:.1f}, "
+                    f"Restored cumulative health ({saved_scoring_mode}): score={self.cumulative_health_scorer.current_score:.1f}, "
                     f"initial={self.cumulative_health_scorer.initial_score}, "
                     f"discipline={self.cumulative_health_scorer.discipline_level.value}"
                 )
@@ -713,7 +739,11 @@ class HealthSimulation:
                 target_location = getattr(intention, 'target_location', None)
                 if not target_location:
                     target_location = self._infer_target_location(intention.activity)
-                resolved_location = self._resolve_target_location(intention.activity, target_location)
+                resolved_location = self._resolve_target_location(
+                    intention.activity,
+                    target_location,
+                    allow_llm_fallback=True
+                )
                 if resolved_location:
                     target_location = resolved_location
                     intention.target_location = resolved_location
@@ -1258,11 +1288,12 @@ class HealthSimulation:
 
     def run_monitoring_period_batch(self, day):
         """
-        批量模式运行一天的监控（性能优化：2次LLM调用替代28次）
+        批量模式运行一天的监控（性能优化：2-3次LLM调用替代28次）
 
         相比串行模式：
         - 串行模式：每个时间点2次LLM调用 = 14个时间点 × 2 = 28次调用
         - 批量模式：一次批量意图生成 + 一次批量策略评估 = 2次调用
+        - 仅在极端无法映射位置时，才可能触发额外1次位置兜底（目标2-3次/天）
         - 预期加速：约10-14倍
 
         Args:
@@ -1388,7 +1419,11 @@ class HealthSimulation:
                 target_location = getattr(intention, 'target_location', None)
                 if not target_location:
                     target_location = self._infer_target_location(intention.activity)
-                resolved_location = self._resolve_target_location(intention.activity, target_location)
+                resolved_location = self._resolve_target_location(
+                    intention.activity,
+                    target_location,
+                    allow_llm_fallback=False
+                )
                 if resolved_location:
                     target_location = resolved_location
                     intention.target_location = resolved_location
@@ -1402,10 +1437,14 @@ class HealthSimulation:
                     is_blocked, block_reason, blocked_location = self._check_env_blocked(target_location, env_state)
 
                 if is_blocked:
-                    # 生成折返事件
-                    turnaround = self._generate_turnaround(
-                        intention, target_location, block_reason, env_state, blocked_location
-                    )
+                    # 优先使用预生成的折返信息（来自batch策略评估）
+                    if (strategy and hasattr(strategy, 'turnaround_if_blocked')
+                        and strategy.turnaround_if_blocked):
+                        turnaround = strategy.turnaround_if_blocked
+                        self.logger.info(f"[{time_str}] 使用预生成折返: {intention.activity} -> {turnaround.get('redirect_activity', '看电视')}")
+                    else:
+                        # 降级：使用模板生成折返（不调用LLM）
+                        turnaround = self._turnaround_template(blocked_location or target_location, block_reason)
 
                     # 更新意图的折返状态
                     intention.discovered_blocked = True
@@ -1578,7 +1617,12 @@ class HealthSimulation:
 
             # Move agents in batch mode for consistent coordinates
             if intention:
-                self._move_agents_based_on_intention(intention, day_log, strategy)
+                self._move_agents_based_on_intention(
+                    intention,
+                    day_log,
+                    strategy,
+                    allow_llm_location_fallback=False
+                )
 
             if strategy and strategy.level == 3:
                 # Locking done; manager leaves the area
@@ -1646,7 +1690,8 @@ class HealthSimulation:
             if not self._is_violation_intention(dummy_intention, target_loc):
                 continue
             matching_inv = interventions_by_time.get(event.get("time"))
-            if not matching_inv or matching_inv.get("level", 0) == 0:
+            # 只有干预未成功（succeeded=False）或没有干预时才计为未阻止违规
+            if not matching_inv or matching_inv.get("level", 0) == 0 or not matching_inv.get("succeeded", False):
                 unblocked_violations += 1
         had_violation = unblocked_violations > 0
         day_log["unblocked_violation_count"] = unblocked_violations
@@ -1830,7 +1875,7 @@ class HealthSimulation:
 
         return day_log
 
-    def _move_agents_based_on_intention(self, intention, day_log, strategy=None):
+    def _move_agents_based_on_intention(self, intention, day_log, strategy=None, allow_llm_location_fallback=True):
         """根据意图内容判断语义位置并移动 agent
 
         优先使用关键词推断，比 LLM 判断更可靠。
@@ -1841,7 +1886,11 @@ class HealthSimulation:
         activity = intention.activity
         semantic_key = getattr(intention, 'target_location', None)
         if semantic_key and semantic_key not in self.scenario.semantic_locations:
-            semantic_key = self._resolve_target_location(activity, semantic_key)
+            semantic_key = self._resolve_target_location(
+                activity,
+                semantic_key,
+                allow_llm_fallback=allow_llm_location_fallback
+            )
 
         if getattr(intention, "discovered_blocked", False):
             redirect_activity = getattr(intention, "redirect_activity", None)
@@ -1873,7 +1922,7 @@ class HealthSimulation:
                 self.logger.info(f"关键词推断位置: '{activity}' -> {semantic_key}")
 
         # 如果关键词推断失败，回退到 LLM 判断
-        if not target_address:
+        if not target_address and allow_llm_location_fallback:
             semantic_key, target_address = self._resolve_semantic_location_with_llm(activity)
 
         if semantic_key and target_address and not bed_moved:
@@ -2153,7 +2202,7 @@ class HealthSimulation:
         # 默认：客厅（晚间活动默认在客厅）
         return "living_room"
 
-    def _resolve_target_location(self, activity: str, target_location: str | None) -> str | None:
+    def _resolve_target_location(self, activity: str, target_location: str | None, allow_llm_fallback: bool = True) -> str | None:
         """确保目标位置可用，必要时映射到场景已有语义位置"""
         semantic_locations = getattr(self.scenario, "semantic_locations", {}) or {}
         if target_location and target_location in semantic_locations:
@@ -2178,9 +2227,10 @@ class HealthSimulation:
         if inferred in semantic_locations:
             return inferred
 
-        llm_key, _ = self._resolve_semantic_location_with_llm(activity)
-        if llm_key in semantic_locations:
-            return llm_key
+        if allow_llm_fallback:
+            llm_key, _ = self._resolve_semantic_location_with_llm(activity)
+            if llm_key in semantic_locations:
+                return llm_key
 
         return None
 
@@ -2812,6 +2862,7 @@ class HealthSimulation:
         def run_single_day(day):
             """运行单天模拟"""
             try:
+                self.current_day = day  # 设置当前天数，确保save_simulation_state正确保存
                 result = self.run_monitoring_period_batch(day)
                 return day, result, None
             except Exception as e:
@@ -2847,7 +2898,7 @@ class HealthSimulation:
         Args:
             resume: If True, attempt to resume from last checkpoint
             batch_mode: If True, use batch LLM calls for ~10x speedup
-                       (2 LLM calls per day instead of 28)
+                       (2-3 LLM calls per day instead of 28)
             parallel_workers: Number of parallel workers (0=sequential, >0=parallel days)
         """
         start_day = 1
@@ -3092,6 +3143,7 @@ class HealthSimulation:
                 "total_days": self.days,
                 "map_folder": self.scenario.map_folder,
                 "export_time": datetime.datetime.now().isoformat(),
+                "scoring_mode": self.scoring_mode,  # 评分模式
             },
             "profile_config": {
                 "target_profile": self.scenario.target_profile,
@@ -3160,6 +3212,11 @@ class HealthSimulation:
                 "reflection": day_log.get("reflection", {}),
                 "target_behaviors": day_log.get("target_behaviors", []),
                 "dynamic_phase": day_log.get("dynamic_phase", "honeymoon"),  # 动态检测的阶段
+                # 位置和轨迹信息
+                "agent_positions": day_log.get("agent_positions", []),
+                "manager_positions": day_log.get("manager_positions", []),
+                "turnaround_summary": day_log.get("turnaround_summary", {}),
+                "agents": day_log.get("agents", {}),
             }
             complete_results["daily_data"].append(daily_entry)
 
@@ -3352,7 +3409,138 @@ class HealthSimulation:
             self.logger.error(f"Failed to export Excel: {e}")
 
 
-def run_all_experiments(scenario: str, days: int, config_path: str, batch_mode: bool, verbose: str):
+def _run_single_experiment_subprocess(args):
+    """通过子进程运行单个实验（避免序列化问题）"""
+    import subprocess
+    import sys
+    import os
+    import json
+
+    # 构建命令行参数
+    cmd = [
+        sys.executable,
+        "start_health_simulation.py",
+        "--scenario", args["scenario"],
+        "--days", str(args["days"]),
+        "--initial-health", str(args["initial_health"]),
+        "--discipline", args["discipline"],
+        "--scoring", args["scoring_mode"],
+    ]
+    if args["batch_mode"]:
+        cmd.append("--batch")
+
+    # 创建临时配置文件
+    config_path = args["config_path"]
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    config["agent"]["think"]["llm"]["api_key"] = args["api_key"]
+
+    temp_config = f"data/config_health_temp_{args['idx']}.json"
+    with open(temp_config, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+    cmd.extend(["--config", temp_config])
+
+    # 运行子进程
+    result = {
+        "experiment": args["idx"],
+        "initial_health": args["initial_health"],
+        "discipline": args["discipline"],
+    }
+
+    try:
+        process = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=7200  # 2小时超时
+        )
+
+        if process.returncode == 0:
+            result["final_score"] = -1
+            result["success"] = False
+            result["status"] = "completed"
+        else:
+            result["error"] = process.stderr[:500] if process.stderr else "Unknown error"
+            result["success"] = False
+            result["status"] = "failed"
+
+    except subprocess.TimeoutExpired:
+        result["error"] = "Timeout (2 hours)"
+        result["success"] = False
+        result["status"] = "timeout"
+    except Exception as e:
+        result["error"] = str(e)
+        result["success"] = False
+        result["status"] = "error"
+    finally:
+        # 清理临时配置
+        if os.path.exists(temp_config):
+            os.remove(temp_config)
+
+    return result
+
+
+def run_single_experiment(args):
+    """单个实验进程（用于并行执行）"""
+    idx, scenario, days, config_path, initial_health, discipline, scoring_mode, api_key, batch_mode = args
+
+    import os
+    import json
+
+    # 创建临时配置文件，使用指定的API key
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+
+    # 修改API key
+    config["agent"]["think"]["llm"]["api_key"] = api_key
+
+    # 写入临时配置
+    temp_config_path = f"data/config_health_temp_{idx}.json"
+    with open(temp_config_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+    try:
+        sim = HealthSimulation(
+            scenario_name=scenario,
+            config_path=temp_config_path,
+            days=days,
+            verbose="info",
+            initial_health=initial_health,
+            discipline_level=discipline,
+            scoring_mode=scoring_mode
+        )
+        sim.initialize()
+        sim.run(resume=False, batch_mode=batch_mode, parallel_workers=0)
+
+        result = {
+            "experiment": idx,
+            "initial_health": initial_health,
+            "discipline": discipline,
+            "final_score": sim.cumulative_health_scorer.current_score,
+            "status": sim.cumulative_health_scorer.get_health_status(),
+            "success": sim.cumulative_health_scorer.current_score >= CumulativeHealthScorer.WARNING_LINE,
+            "result_path": str(sim.result_path)
+        }
+    except Exception as e:
+        result = {
+            "experiment": idx,
+            "initial_health": initial_health,
+            "discipline": discipline,
+            "error": str(e),
+            "success": False
+        }
+    finally:
+        # 清理临时配置
+        if os.path.exists(temp_config_path):
+            os.remove(temp_config_path)
+
+    return result
+
+
+def run_all_experiments(scenario: str, days: int, config_path: str, batch_mode: bool, verbose: str, scoring_mode: str = "linear", parallel: int = 0):
     """运行所有9种实验组合（3种初始分 × 3种自律程度）
 
     Args:
@@ -3361,13 +3549,16 @@ def run_all_experiments(scenario: str, days: int, config_path: str, batch_mode: 
         config_path: 配置文件路径
         batch_mode: 是否使用批量模式
         verbose: 日志级别
+        scoring_mode: 评分模式（linear/nonlinear）
+        parallel: 并行进程数（0=串行，>0=并行）
     """
     print("\n" + "=" * 70)
     print("  健康管理模拟 - 9种实验组合（2026-01-23 设计）")
     print("=" * 70)
     print(f"\n  场景: {scenario}")
     print(f"  天数: {days}")
-    print(f"  模式: {'批量' if batch_mode else '串行'}")
+    print(f"  评分模式: {scoring_mode}")
+    print(f"  模式: {'批量' if batch_mode else '串行'}" + (f" + 并行({parallel})" if parallel > 0 else ""))
     print("\n  实验组合:")
     print("  ┌─────────────────┬──────────────────────────────────────┐")
     print("  │   初始健康分     │        自律程度                      │")
@@ -3392,6 +3583,114 @@ def run_all_experiments(scenario: str, days: int, config_path: str, batch_mode: 
         (60, "low"),    # exp9
     ]
 
+    # 从配置读取所有API keys
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    api_keys = config["agent"]["think"]["llm"].get("api_keys", [config["agent"]["think"]["llm"]["api_key"]])
+    print(f"  可用API keys: {len(api_keys)} 个")
+
+    if parallel > 0:
+        # 并行模式 - 使用subprocess.Popen启动独立进程，避免DLL冲突
+        import subprocess
+        import sys
+        import os
+        import time
+
+        print(f"\n  启动 {parallel} 个并行实验...")
+
+        # 启动所有子进程
+        processes = []
+        for i, (initial_health, discipline) in enumerate(experiments, 1):
+            api_key = api_keys[(i - 1) % len(api_keys)]
+
+            # 构建命令行参数
+            cmd = [
+                sys.executable,
+                "start_health_simulation.py",
+                "--scenario", scenario,
+                "--days", str(days),
+                "--initial-health", str(initial_health),
+                "--discipline", discipline,
+                "--scoring", scoring_mode,
+            ]
+            if batch_mode:
+                cmd.append("--batch")
+
+            # 创建临时配置文件（包含不同的API key）
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            config["agent"]["think"]["llm"]["api_key"] = api_key
+
+            temp_config = f"data/config_health_temp_{i}.json"
+            with open(temp_config, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+
+            cmd.extend(["--config", temp_config])
+
+            # 启动子进程（独立运行，不继承父进程环境）
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+
+            process = subprocess.Popen(
+                cmd,
+                cwd=os.path.dirname(os.path.abspath(__file__)) or ".",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                env=env
+            )
+
+            processes.append({
+                "idx": i,
+                "process": process,
+                "initial_health": initial_health,
+                "discipline": discipline,
+                "temp_config": temp_config,
+                "start_time": time.time()
+            })
+            print(f"  启动实验 {i}: init{initial_health}_{discipline} (PID: {process.pid})")
+
+        print(f"\n  等待 {len(processes)} 个实验完成...")
+        print("  (每个实验最多2小时超时)")
+
+        # 等待所有进程完成
+        completed = []
+        for p in processes:
+            try:
+                stdout, stderr = p["process"].communicate(timeout=7200)
+                elapsed = time.time() - p["start_time"]
+
+                if p["process"].returncode == 0:
+                    print(f"  实验 {p['idx']} 完成 (耗时 {elapsed/60:.1f}分钟): init{p['initial_health']}_{p['discipline']}")
+                    completed.append(True)
+                else:
+                    error_msg = stderr[:200] if stderr else "Unknown error"
+                    print(f"  实验 {p['idx']} 失败: {error_msg}")
+                    completed.append(False)
+            except subprocess.TimeoutExpired:
+                p["process"].kill()
+                print(f"  实验 {p['idx']} 超时 (2小时)")
+                completed.append(False)
+            except Exception as e:
+                print(f"  实验 {p['idx']} 异常: {e}")
+                completed.append(False)
+            finally:
+                # 清理临时配置文件
+                try:
+                    if os.path.exists(p["temp_config"]):
+                        os.remove(p["temp_config"])
+                except:
+                    pass
+
+        success_count = sum(completed)
+        print(f"\n  完成: {success_count}/{len(processes)} 个实验成功")
+
+        print("\n  所有并行实验完成！")
+        return None
+
+    # 串行模式（原逻辑）
     results = []
     for i, (initial_health, discipline) in enumerate(experiments, 1):
         print(f"\n{'='*60}")
@@ -3405,7 +3704,8 @@ def run_all_experiments(scenario: str, days: int, config_path: str, batch_mode: 
                 days=days,
                 verbose=verbose,
                 initial_health=initial_health,
-                discipline_level=discipline
+                discipline_level=discipline,
+                scoring_mode=scoring_mode
             )
             sim.initialize()
             sim.run(resume=False, batch_mode=batch_mode, parallel_workers=0)
@@ -3419,14 +3719,14 @@ def run_all_experiments(scenario: str, days: int, config_path: str, batch_mode: 
                 "discipline": discipline,
                 "final_score": final_score,
                 "status": sim.cumulative_health_scorer.get_health_status(),
-                "success": final_score >= NonlinearHealthScorer.WARNING_LINE,
+                "success": final_score >= CumulativeHealthScorer.WARNING_LINE,
                 "result_path": result_folder
             })
-            print(f"  ✓ 实验 {i} 完成: 最终健康分 = {final_score:.1f}")
+            print(f"  实验 {i} 完成: 最终健康分 = {final_score:.1f}")
             print(f"    保存路径: {result_folder}")
 
         except Exception as e:
-            print(f"  ✗ 实验 {i} 失败: {e}")
+            print(f"  实验 {i} 失败: {e}")
             results.append({
                 "experiment": i,
                 "initial_health": initial_health,
@@ -3452,6 +3752,7 @@ def run_all_experiments(scenario: str, days: int, config_path: str, batch_mode: 
     success_count = sum(1 for r in results if r.get("success", False))
     print(f"  总计: {success_count}/9 个实验成功（健康分保持在警戒线以上）")
     print("=" * 70 + "\n")
+    return results
 
 
 def main():
@@ -3521,6 +3822,9 @@ Examples:
                         help="Self-discipline level (low/medium/high). Default: medium")
     parser.add_argument("--run-all", action="store_true",
                         help="Run all 9 experiment combinations (3 initial scores × 3 discipline levels)")
+    parser.add_argument("--scoring", type=str, default="linear",
+                        choices=["linear", "nonlinear"],
+                        help="Health scoring mode: linear (CumulativeHealthScorer) or nonlinear (NonlinearHealthScorer). Default: linear")
 
     args = parser.parse_args()
 
@@ -3531,7 +3835,9 @@ Examples:
             days=args.days,
             config_path=args.config,
             batch_mode=args.batch,
-            verbose=args.verbose
+            verbose=args.verbose,
+            scoring_mode=args.scoring,
+            parallel=args.parallel
         )
         return
 
@@ -3544,13 +3850,15 @@ Examples:
         verbose=args.verbose,
         initial_health=args.initial_health,
         discipline_level=args.discipline,
-        resume_mode=args.resume or args.status  # resume 和 status 都需要查找现有目录
+        resume_mode=args.resume or args.status,  # resume 和 status 都需要查找现有目录
+        scoring_mode=args.scoring  # 评分模式：linear 或 nonlinear
     )
 
     # Status check mode
     if args.status:
         print(f"\n=== Health Simulation Status: {args.scenario} ===\n")
         print(f"  初始健康分: {args.initial_health}")
+        print(f"  评分模式: {args.scoring}")
         print(f"  自律程度: {args.discipline}")
         if sim.can_resume():
             with open(sim.state_file, 'r', encoding='utf-8') as f:
@@ -3571,6 +3879,59 @@ Examples:
     # Initialize and run
     sim.initialize()
     sim.run(resume=args.resume, batch_mode=args.batch, parallel_workers=args.parallel)
+
+    # 模拟完成后自动分析结果
+    print("\n" + "=" * 70)
+    print("Simulation completed! Running automatic analysis...")
+    print("=" * 70)
+
+    # 调用 analyze_health 进行分析
+    analyzer = analyze_health.HealthAnalyzer(
+        results_dir="results/health",
+        csv_dir="results/csv"
+    )
+
+    # 构建运行名称（与模拟结果目录名称一致）
+    experiment_prefix = f"init{args.initial_health}_{args.discipline}"
+    run_name = f"{experiment_prefix}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    # 查找最新的该运行结果
+    scenario_dir = Path("results/health") / args.scenario
+    if scenario_dir.exists():
+        # 查找匹配的运行目录
+        matching_dirs = sorted([
+            d for d in scenario_dir.iterdir()
+            if d.is_dir() and d.name.startswith(experiment_prefix) and not d.name.endswith("_latest")
+        ], key=lambda x: x.stat().st_mtime, reverse=True)
+
+        if matching_dirs:
+            latest_run_path = matching_dirs[0]
+            results = analyzer.load_results(str(latest_run_path))
+            if results:
+                # 提取 metrics
+                metrics = analyzer.extract_metrics(results)
+                if metrics:
+                    # 获取评分模式
+                    scoring_mode = results.get('metadata', {}).get('scoring_mode', 'linear')
+                    # 导出 CSV
+                    csv_path = analyzer.export_to_csv(
+                        args.scenario,
+                        latest_run_path.name,
+                        metrics,
+                        scoring_mode
+                    )
+                    if csv_path:
+                        print(f"\n✓ Analysis CSV saved: {csv_path}")
+                    else:
+                        print("\n✗ Failed to export analysis CSV")
+                else:
+                    print("\n✗ No metrics extracted")
+            else:
+                print("\n✗ Failed to load results for analysis")
+        else:
+            print("\n⚠ No matching run found for analysis")
+    else:
+        print("\n⚠ Results directory not found")
 
 
 if __name__ == "__main__":

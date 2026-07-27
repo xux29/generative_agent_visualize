@@ -111,31 +111,31 @@ class CumulativeHealthScorer:
     # 典型模式：HIGH每5-7天一次浅V，MEDIUM每3-5天一次中V，LOW频繁深V
     DISCIPLINE_PARAMS = {
         SelfDisciplineLevel.HIGH: {
-            "natural_recovery": 5,        # 每天自然恢复分数（快速恢复）
+            "natural_recovery": 3,        # 每天自然恢复分数（适当降低）
             "plateau_duration": 14,       # 平台期持续天数（天）
             "decline_rate": 0.5,          # 下滑速度（分/天）
             "mood_sensitivity": 0.7,      # 情绪敏感度（越低越稳定）
             "violation_penalty": 10,      # 违规惩罚基础分（每次未阻止的违规）
             "compliance_bonus": 2,        # 遵从奖励基础分（限制在初始分以下）
-            "description": "高自律：平台期长(14天)、恢复快(+5/天)、每次违规-10、2天恢复",
+            "description": "高自律：平台期长(14天)、恢复快(+3/天)、每次违规-10、2天恢复",
         },
         SelfDisciplineLevel.MEDIUM: {
-            "natural_recovery": 3,
+            "natural_recovery": 2,
             "plateau_duration": 7,
             "decline_rate": 1.0,
             "mood_sensitivity": 1.0,
             "violation_penalty": 12,
             "compliance_bonus": 1.5,
-            "description": "中自律：平台期中(7天)、恢复中(+3/天)、每次违规-12、4天恢复",
+            "description": "中自律：平台期中(7天)、恢复中(+2/天)、每次违规-12、4天恢复",
         },
         SelfDisciplineLevel.LOW: {
-            "natural_recovery": 2,
+            "natural_recovery": 1.5,
             "plateau_duration": 3,
             "decline_rate": 2.0,
             "mood_sensitivity": 1.5,
             "violation_penalty": 15,
             "compliance_bonus": 1,
-            "description": "低自律：平台期短(3天)、恢复慢(+2/天)、每次违规-15、7天恢复",
+            "description": "低自律：平台期短(3天)、恢复慢(+1.5/天)、每次违规-15、7天恢复",
         },
     }
 
@@ -241,9 +241,9 @@ class CumulativeHealthScorer:
 
                 if in_recovery:
                     # 恢复期的轻微违规不计入"连续不良天数"（不触发加速下滑）
-                    # 且仍然给予自然恢复（净效果：recovery - tiny_penalty = positive）
+                    # 违规日恢复补贴：无违规日已有自然恢复，这里只补贴部分（0.3倍）
                     recovery = min(
-                        self.params["natural_recovery"],
+                        self.params["natural_recovery"] * 0.3,
                         self.initial_score - (self.current_score + change)
                     )
                     recovery = max(0, recovery)
