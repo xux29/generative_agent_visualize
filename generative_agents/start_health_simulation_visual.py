@@ -48,7 +48,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
     from dotenv import load_dotenv, find_dotenv
-    from start_health_simulation import HealthSimulation
+    from start_health_simulation import HealthSimulation, resolve_and_load_mechanism_config
     from modules.game import get_game
     from modules import utils
 except ImportError as e:
@@ -246,6 +246,7 @@ class HealthSimulationVisual(HealthSimulation):
 
         # Add cumulative health summary
         checkpoint_data["health_summary"] = self.cumulative_health_scorer.get_summary()
+        checkpoint_data["mechanism_version_id"] = getattr(self, "mechanism_version_id", None)
 
         # Add time and step info
         time_str = current_time.strftime("%Y%m%d-%H:%M")
@@ -319,8 +320,25 @@ def main():
         choices=["debug", "info"],
         help="Logging level"
     )
+    parser.add_argument(
+        "--mechanism-config",
+        type=str,
+        default=None,
+        help="可选：加载指定机制配置 JSON（进进程，不改 active）",
+    )
+    parser.add_argument(
+        "--mechanism-version",
+        type=str,
+        default=None,
+        help="可选：加载指定机制版本进进程（不 activate / 不改 active.json）",
+    )
 
     args = parser.parse_args()
+
+    resolve_and_load_mechanism_config(
+        mechanism_config=args.mechanism_config,
+        mechanism_version=args.mechanism_version,
+    )
 
     print(f"\n{'='*60}")
     print(f"Health Simulation (Visual Mode)")

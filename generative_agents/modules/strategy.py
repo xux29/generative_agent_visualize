@@ -15,9 +15,17 @@
 5. 长期目标调整：阶段性目标调整
 """
 
+from copy import deepcopy
 from enum import Enum
 from typing import List, Dict, Optional, Tuple
 import random
+
+from modules.mechanism_config import get_path
+
+
+def _mgmt(dotted: str, default=None):
+    """读取 management.* 配置；缺失时返回 default。"""
+    return get_path(f"management.{dotted}", default)
 
 
 class Strategy:
@@ -170,16 +178,40 @@ class StrategyManager:
             scenario: 场景类型 ("diabetes", "weight_loss", "sleep")
         """
         self.scenario = scenario.lower().replace("-", "_").replace("home_", "")
-        if self.scenario not in self.SCENARIO_SEVERITY:
+        scenarios = _mgmt("tidal.scenarios") or self.SCENARIO_SEVERITY
+        if self.scenario not in scenarios:
             self.scenario = "diabetes"  # 默认
 
-        self.config = self.SCENARIO_SEVERITY[self.scenario]
+        scenario_cfg = scenarios.get(self.scenario) or self.SCENARIO_SEVERITY.get(
+            self.scenario, self.SCENARIO_SEVERITY["diabetes"]
+        )
+        self.config = deepcopy(scenario_cfg)
+
+        # 潮汐信任度参数（management.tidal.trust_level）
+        trust = _mgmt("tidal.trust_level") or {}
+        self.trust_cfg = {
+            "initial": trust.get("initial", 0.5),
+            "good_delta": trust.get("good_delta", 0.1),
+            "bad_delta": trust.get("bad_delta", -0.15),
+            "over_intervention_delta": trust.get("over_intervention_delta", -0.2),
+            "relax_min": trust.get("relax_min", 0.6),
+            "good_streak_bonus_per_day": trust.get("good_streak_bonus_per_day", 0.02),
+            "good_streak_bonus_cap": trust.get("good_streak_bonus_cap", 0.1),
+            "good_streak_bonus_min_days": trust.get("good_streak_bonus_min_days", 2),
+        }
+
+        # 干预等级（management.intervention）
+        interv = _mgmt("intervention") or {}
+        self.max_intervention_level = interv.get("max_level", 3)
+        self.intervention_levels = interv.get("levels") or {
+            "0": "observe", "1": "persuade", "2": "remove", "3": "lock",
+        }
 
         # 状态追踪
         self.current_level = 0           # 当前策略等级
         self.consecutive_good_days = 0   # 连续良好天数
         self.consecutive_bad_days = 0    # 连续不良天数
-        self.trust_level = 0.5           # 信任度 (0-1)
+        self.trust_level = self.trust_cfg["initial"]  # 信任度 (0-1)
         self.health_history = []         # 健康分历史
         self.intervention_history = []   # 干预历史
         self.relaxation_day = None       # 开始放松的日期
@@ -246,14 +278,18 @@ class StrategyManager:
         """
         threshold_good = self.config["health_threshold_good"]
         required_good_days = self.config["consecutive_good_days_to_relax"]
+        tc = self.trust_cfg
 
         if health_score >= threshold_good:
             # 表现好，增加信任
-            base_trust_gain = 0.1
+            base_trust_gain = tc["good_delta"]
 
             # 连续表现好时，信任增长更快
-            if self.consecutive_good_days >= 2:
-                bonus = min(0.1, self.consecutive_good_days * 0.02)  # 最多额外+0.1
+            if self.consecutive_good_days >= tc["good_streak_bonus_min_days"]:
+                bonus = min(
+                    tc["good_streak_bonus_cap"],
+                    self.consecutive_good_days * tc["good_streak_bonus_per_day"],
+                )
                 base_trust_gain += bonus
 
             self.trust_level = min(1.0, self.trust_level + base_trust_gain)
@@ -261,11 +297,12 @@ class StrategyManager:
             # 过度干预惩罚：只有在已经持续表现好足够长时间后才适用
             # 这样复发后的恢复期内不会被不公平地扣分
             if intervention_count >= 3 and self.consecutive_good_days >= required_good_days:
-                self.trust_level = max(0.0, self.trust_level - 0.2)
+                # over_intervention_delta 为负值（如 -0.2）
+                self.trust_level = max(0.0, self.trust_level + tc["over_intervention_delta"])
 
         elif health_score < self.config["health_threshold_bad"]:
-            # 表现差，减少信任
-            self.trust_level = max(0.0, self.trust_level - 0.15)
+            # 表现差，减少信任（bad_delta 为负值）
+            self.trust_level = max(0.0, self.trust_level + tc["bad_delta"])
 
     def should_escalate(self):
         """
@@ -277,7 +314,7 @@ class StrategyManager:
         required_bad_days = self.config["consecutive_bad_days_to_escalate"]
         return (
             self.consecutive_bad_days >= required_bad_days
-            and self.current_level < 3
+            and self.current_level < self.max_intervention_level
         )
 
     def should_relax(self):
@@ -291,7 +328,7 @@ class StrategyManager:
         return (
             self.consecutive_good_days >= required_good_days
             and self.current_level > 0
-            and self.trust_level >= 0.6  # 信任度足够才能放松
+            and self.trust_level >= self.trust_cfg["relax_min"]
         )
 
     def get_recommended_level(self, day):
@@ -313,7 +350,7 @@ class StrategyManager:
 
         # 情况1：应该升档（表现持续不好）
         if self.should_escalate():
-            self.current_level = min(3, self.current_level + 1)
+            self.current_level = min(self.max_intervention_level, self.current_level + 1)
             self.is_relaxed = False
             self.relaxation_day = None
             reason = f"连续{self.consecutive_bad_days}天表现不佳，升档至Level {self.current_level}"
@@ -395,16 +432,17 @@ class StrategyManager:
         self.consecutive_bad_days = 1
 
         # 复发后根据场景严重程度决定升档幅度
+        max_lv = self.max_intervention_level
         severity = self.config["severity_weight"]
         if severity >= 1.5:
             # 糖尿病：直接升到最高档
-            self.current_level = 3
+            self.current_level = max_lv
         elif severity >= 1.0:
             # 减肥：升2档或到最高
-            self.current_level = min(3, self.current_level + 2)
+            self.current_level = min(max_lv, self.current_level + 2)
         else:
             # 睡眠：升1档
-            self.current_level = min(3, self.current_level + 1)
+            self.current_level = min(max_lv, self.current_level + 1)
 
         return self.current_level
 
@@ -499,6 +537,21 @@ class HabitConsolidation:
         self.resistance_after_relax = []            # 放松后的抵抗记录
         self.emotion_behavior_alignment = []        # 情绪行为一致性记录
 
+        hc = _mgmt("habit_consolidation") or {}
+        weights = hc.get("weights") or {}
+        self.score_weights = {
+            "no_intervention": weights.get("no_intervention", 0.4),
+            "proactive": weights.get("proactive", 0.3),
+            "emotion": weights.get("emotion", 0.3),
+        }
+        self.min_opportunities = hc.get("min_opportunities", 7)
+        thresholds = hc.get("stage_thresholds") or {}
+        self.stage_thresholds = {
+            "autonomous": thresholds.get("autonomous", 0.8),
+            "internalized": thresholds.get("internalized", 0.6),
+            "compliant": thresholds.get("compliant", 0.3),
+        }
+
     def record_opportunity(self, day: int, intervention_level: int, complied: bool,
                            was_proactive: bool = False, emotion_positive: bool = None):
         """
@@ -550,7 +603,7 @@ class HabitConsolidation:
         Returns:
             str: 内化阶段
         """
-        if self.total_opportunities < 7:
+        if self.total_opportunities < self.min_opportunities:
             return self.STAGE_FORCED  # 数据太少
 
         # 计算关键指标
@@ -564,14 +617,20 @@ class HabitConsolidation:
         else:
             emotion_alignment = 0.0
 
-        # 综合评分
-        score = (no_interv_rate * 0.4 + proactive_rate * 0.3 + emotion_alignment * 0.3)
+        # 综合评分（权重来自 management.habit_consolidation）
+        w = self.score_weights
+        score = (
+            no_interv_rate * w["no_intervention"]
+            + proactive_rate * w["proactive"]
+            + emotion_alignment * w["emotion"]
+        )
 
-        if score >= 0.8:
+        th = self.stage_thresholds
+        if score >= th["autonomous"]:
             return self.STAGE_AUTONOMOUS
-        elif score >= 0.6:
+        elif score >= th["internalized"]:
             return self.STAGE_INTERNALIZED
-        elif score >= 0.3:
+        elif score >= th["compliant"]:
             return self.STAGE_COMPLIANT
         else:
             return self.STAGE_FORCED
@@ -625,10 +684,28 @@ class TrustCapital:
     - 低信任资本需要更严格管控
     """
 
-    def __init__(self, initial_capital: float = 50.0):
+    def __init__(self, initial_capital: float = None):
+        tc = _mgmt("trust_capital") or {}
+        if initial_capital is None:
+            initial_capital = tc.get("initial_capital", 50.0)
         self.capital = initial_capital       # 当前信任资本
-        self.max_capital = 100.0             # 最大信任资本
-        self.min_capital = 0.0               # 最小信任资本
+        self.max_capital = tc.get("max_capital", 100.0)
+        self.min_capital = tc.get("min_capital", 0.0)
+        autonomy = tc.get("autonomy_thresholds") or {}
+        self.autonomy_thresholds = {
+            "high": autonomy.get("high", 80),
+            "medium": autonomy.get("medium", 50),
+            "low": autonomy.get("low", 20),
+        }
+        daily = tc.get("daily") or {}
+        self.daily = {
+            "good_earn": daily.get("good_earn", 2),
+            "proactive_earn": daily.get("proactive_earn", 3),
+            "no_intervention_earn": daily.get("no_intervention_earn", 2),
+            "bad_loss": daily.get("bad_loss", 5),
+            "stable_bad_loss": daily.get("stable_bad_loss", 8),
+            "relapse_loss": daily.get("relapse_loss", 10),
+        }
         self.capital_history = []            # 资本变化历史
         self.spent_capital = 0.0             # 累计花费的信任资本
         self.earned_capital = 0.0            # 累计赚取的信任资本
@@ -704,11 +781,12 @@ class TrustCapital:
         Returns:
             str: autonomy level
         """
-        if self.capital >= 80:
+        t = self.autonomy_thresholds
+        if self.capital >= t["high"]:
             return "high"        # 高自主权：最低干预
-        elif self.capital >= 50:
+        elif self.capital >= t["medium"]:
             return "medium"      # 中等自主权：适度干预
-        elif self.capital >= 20:
+        elif self.capital >= t["low"]:
             return "low"         # 低自主权：较多干预
         else:
             return "minimal"     # 最低自主权：严格管控
@@ -727,6 +805,9 @@ class TrustCapital:
         return {
             "capital": self.capital,
             "max_capital": self.max_capital,
+            "min_capital": self.min_capital,
+            "autonomy_thresholds": self.autonomy_thresholds,
+            "daily": self.daily,
             "capital_history": self.capital_history,
             "spent_capital": self.spent_capital,
             "earned_capital": self.earned_capital,
@@ -735,7 +816,12 @@ class TrustCapital:
     @classmethod
     def from_dict(cls, data: Dict) -> "TrustCapital":
         obj = cls(initial_capital=data.get("capital", 50.0))
-        obj.max_capital = data.get("max_capital", 100.0)
+        obj.max_capital = data.get("max_capital", obj.max_capital)
+        obj.min_capital = data.get("min_capital", obj.min_capital)
+        if "autonomy_thresholds" in data:
+            obj.autonomy_thresholds = data["autonomy_thresholds"]
+        if "daily" in data:
+            obj.daily = data["daily"]
         obj.capital_history = data.get("capital_history", [])
         obj.spent_capital = data.get("spent_capital", 0.0)
         obj.earned_capital = data.get("earned_capital", 0.0)
@@ -753,12 +839,39 @@ class ManagerLearning:
     """
 
     def __init__(self):
+        ml = _mgmt("manager_learning") or {}
+        downgrade = ml.get("efficiency_downgrade") or {}
+        self._ml_cfg = {
+            "success_understanding_delta_factor": ml.get(
+                "success_understanding_delta_factor", 0.02
+            ),
+            "fail_understanding_delta": ml.get("fail_understanding_delta", 0.005),
+            "cycle_understanding_delta_factor": ml.get(
+                "cycle_understanding_delta_factor", 0.05
+            ),
+            "efficiency_delta_low_level": ml.get("efficiency_delta_low_level", 0.02),
+            "efficiency_delta_high_level": ml.get("efficiency_delta_high_level", 0.01),
+            "early_intervention_base": ml.get("early_intervention_base", 50.0),
+            "early_intervention_understanding_scale": ml.get(
+                "early_intervention_understanding_scale", 20.0
+            ),
+            "efficiency_from_understanding_scale": ml.get(
+                "efficiency_from_understanding_scale", 0.5
+            ),
+            "efficiency_downgrade": {
+                "high": downgrade.get("high", 1.3),
+                "medium": downgrade.get("medium", 1.1),
+                "medium_min_base_level": downgrade.get("medium_min_base_level", 2),
+            },
+            "trend_understanding_min": ml.get("trend_understanding_min", 0.5),
+            "trend_avg_delta_threshold": ml.get("trend_avg_delta_threshold", -1),
+        }
         # 学习程度 (0.0-1.0)，越高表示越了解
         self.understanding_level: float = 0.0
         # 干预效率 (1.0 = 基准，>1 表示更高效)
         self.intervention_efficiency: float = 1.0
         # 早期介入阈值（健康分高于此值就开始介入）
-        self.early_intervention_threshold: float = 50.0  # 初始值
+        self.early_intervention_threshold: float = self._ml_cfg["early_intervention_base"]
         # 学习历史
         self.learning_events: List[Dict] = []
         # 成功干预次数
@@ -779,6 +892,7 @@ class ManagerLearning:
             health_before: 干预前健康分
             health_after: 干预后健康分
         """
+        cfg = self._ml_cfg
         event = {
             "day": day,
             "level": level,
@@ -792,19 +906,21 @@ class ManagerLearning:
         if success:
             self.successful_interventions += 1
             # 成功干预增加理解程度
-            learn_delta = 0.02 * (1 - self.understanding_level)  # 边际递减
+            learn_delta = cfg["success_understanding_delta_factor"] * (
+                1 - self.understanding_level
+            )
             self.understanding_level = min(1.0, self.understanding_level + learn_delta)
 
             # 低级别干预成功说明更了解对方，效率提升更多
             if level <= 1:
-                self.intervention_efficiency += 0.02
+                self.intervention_efficiency += cfg["efficiency_delta_low_level"]
             else:
-                self.intervention_efficiency += 0.01
+                self.intervention_efficiency += cfg["efficiency_delta_high_level"]
         else:
             self.failed_interventions += 1
             # 失败干预说明还需要学习
             # 但也可以从失败中学习
-            self.understanding_level += 0.005
+            self.understanding_level += cfg["fail_understanding_delta"]
 
     def record_cycle_completion(self, day: int, peak_health: float, trough_health: float):
         """记录一个完整周期（从低谷到高峰再到低谷）
@@ -814,18 +930,25 @@ class ManagerLearning:
             peak_health: 周期最高健康分
             trough_health: 周期最低健康分
         """
+        cfg = self._ml_cfg
         self.cycle_count += 1
 
         # 每完成一个周期，管理者更了解被管理者
-        cycle_learning = 0.05 * (1 - self.understanding_level)
+        cycle_learning = cfg["cycle_understanding_delta_factor"] * (
+            1 - self.understanding_level
+        )
         self.understanding_level = min(1.0, self.understanding_level + cycle_learning)
 
         # 更新早期介入阈值（越了解，阈值越高）
-        # 初始50分开始介入，最终可能70分就开始介入
-        self.early_intervention_threshold = 50.0 + self.understanding_level * 20.0
+        self.early_intervention_threshold = (
+            cfg["early_intervention_base"]
+            + self.understanding_level * cfg["early_intervention_understanding_scale"]
+        )
 
         # 更新干预效率
-        self.intervention_efficiency = 1.0 + self.understanding_level * 0.5
+        self.intervention_efficiency = (
+            1.0 + self.understanding_level * cfg["efficiency_from_understanding_scale"]
+        )
 
         self.learning_events.append({
             "type": "cycle_completion",
@@ -848,12 +971,13 @@ class ManagerLearning:
         Returns:
             int: 调整后的等级
         """
-        if self.intervention_efficiency >= 1.3:
+        dg = self._ml_cfg["efficiency_downgrade"]
+        if self.intervention_efficiency >= dg["high"]:
             # 高效率：可以降级干预
             return max(0, base_level - 1)
-        elif self.intervention_efficiency >= 1.1:
+        elif self.intervention_efficiency >= dg["medium"]:
             # 中等效率：偶尔降级
-            if base_level >= 2:
+            if base_level >= dg["medium_min_base_level"]:
                 return base_level - 1
         return base_level
 
@@ -866,16 +990,17 @@ class ManagerLearning:
         Returns:
             Tuple[bool, str]: (是否应该介入, 原因)
         """
+        cfg = self._ml_cfg
         if current_health <= self.early_intervention_threshold:
             return True, f"健康分{current_health:.1f}已低于学习阈值{self.early_intervention_threshold:.1f}"
 
         # 经验丰富的管理者能识别下滑趋势
-        if self.understanding_level >= 0.5:
+        if self.understanding_level >= cfg["trend_understanding_min"]:
             # 检查最近的健康分趋势
             recent_events = [e for e in self.learning_events if "health_after" in e][-5:]
             if len(recent_events) >= 3:
                 avg_delta = sum(e.get("health_delta", 0) for e in recent_events) / len(recent_events)
-                if avg_delta < -1:  # 平均下滑
+                if avg_delta < cfg["trend_avg_delta_threshold"]:
                     return True, f"检测到下滑趋势(平均变化{avg_delta:+.1f})，提前介入"
 
         return False, ""
@@ -936,7 +1061,7 @@ class LongTermStrategyManager(StrategyManager):
     7. 过度干预保护机制（v2新增）
     """
 
-    # 过度干预保护阈值（v2新增）
+    # 过度干预保护阈值（v2新增；实例可被 mechanism config 覆盖）
     OVER_INTERVENTION_CONFIG = {
         "emotion_warning_threshold": 3.0,    # 情绪分低于此值触发警告
         "emotion_critical_threshold": 2.5,   # 情绪分低于此值强制降级
@@ -944,6 +1069,12 @@ class LongTermStrategyManager(StrategyManager):
         "medium_trust_threshold": 50,        # 信任资本中等阈值
         "health_safe_threshold": 6,          # 健康分高于此值时可以放松干预
         "max_consecutive_high_interventions": 5,  # 连续高强度干预超过此天数触发保护
+        "forced_relaxation": {
+            "low_emotion_days": 3,
+            "duration_days": 3,
+        },
+        "high_intensity_min_level": 2,
+        "soften_min_health": 5,
     }
 
     # 关系阶段配置（基于行为识别，而非固定天数）
@@ -1007,13 +1138,28 @@ class LongTermStrategyManager(StrategyManager):
     def __init__(self, scenario="diabetes"):
         super().__init__(scenario)
 
+        # 从 mechanism config 加载阶段 / 过度干预 / 反思参数（类常量作默认）
+        self.PHASE_CONFIG = self._load_phase_config()
+        self.OVER_INTERVENTION_CONFIG = self._load_over_intervention_config()
+        ref = _mgmt("reflection") or {}
+        self.reflection_cfg = {
+            "weekly_period_days": ref.get("weekly_period_days", 7),
+            "monthly_period_days": ref.get("monthly_period_days", 30),
+            "weekly_high_intervention_threshold": ref.get(
+                "weekly_high_intervention_threshold", 20
+            ),
+            "weekly_low_intervention_threshold": ref.get(
+                "weekly_low_intervention_threshold", 5
+            ),
+        }
+
         # 长期状态
         self.current_phase = RelationshipPhase.HONEYMOON
         self.phase_start_day = 1
         self.relapse_count = 0           # 复发次数
 
-        # 新增组件
-        self.trust_capital = TrustCapital(initial_capital=50.0)
+        # 新增组件（内部自行读 management.trust_capital / habit / learning）
+        self.trust_capital = TrustCapital()
         self.habit_tracker = HabitConsolidation()
         self.manager_learning = ManagerLearning()  # 管理者学习曲线
 
@@ -1022,7 +1168,10 @@ class LongTermStrategyManager(StrategyManager):
         self.monthly_summaries = []
 
         # 长期目标
-        self.current_goal = "建立关系和规则"
+        honeymoon_goal = self.PHASE_CONFIG.get(
+            RelationshipPhase.HONEYMOON, {}
+        ).get("goal", "建立关系和规则")
+        self.current_goal = honeymoon_goal
         self.goal_progress = 0.0
 
         # 行为指标追踪（实例级别）
@@ -1048,6 +1197,34 @@ class LongTermStrategyManager(StrategyManager):
             "forced_relaxation_active": False,        # 强制放松模式是否激活
             "forced_relaxation_until_day": None,      # 强制放松到哪天
         }
+
+    @classmethod
+    def _load_phase_config(cls) -> Dict:
+        """从 management.relationship_phases 加载阶段配置。"""
+        raw = _mgmt("relationship_phases")
+        loaded = {}
+        for phase, default_cfg in cls.PHASE_CONFIG.items():
+            if isinstance(raw, dict) and phase.value in raw:
+                loaded[phase] = deepcopy(raw[phase.value])
+            else:
+                loaded[phase] = deepcopy(default_cfg)
+        return loaded
+
+    @classmethod
+    def _load_over_intervention_config(cls) -> Dict:
+        """从 management.over_intervention 加载过度干预保护配置。"""
+        cfg = deepcopy(cls.OVER_INTERVENTION_CONFIG)
+        raw = _mgmt("over_intervention")
+        if not isinstance(raw, dict):
+            return cfg
+        for key, value in raw.items():
+            if key == "forced_relaxation" and isinstance(value, dict):
+                merged = deepcopy(cfg.get("forced_relaxation") or {})
+                merged.update(value)
+                cfg["forced_relaxation"] = merged
+            else:
+                cfg[key] = deepcopy(value)
+        return cfg
 
     def set_emotion_context(self, emotion_score: float, day: int):
         """
@@ -1092,13 +1269,17 @@ class LongTermStrategyManager(StrategyManager):
                 protection["forced_relaxation_until_day"] = None
 
         # 条件2：情绪分极低 + 健康分尚可 = 过度干预信号
+        fr = config.get("forced_relaxation") or {}
+        low_emotion_days = fr.get("low_emotion_days", 3)
+        duration_days = fr.get("duration_days", 3)
         if emotion < config["emotion_critical_threshold"] and health_score >= config["health_safe_threshold"]:
             protection["over_intervention_warnings"] += 1
-            # 连续3天触发保护
-            if self._emotion_context["consecutive_low_emotion_days"] >= 3:
+            if self._emotion_context["consecutive_low_emotion_days"] >= low_emotion_days:
                 protection["forced_relaxation_active"] = True
-                protection["forced_relaxation_until_day"] = day + 3  # 强制放松3天
-                return True, f"情绪过低({emotion:.1f})且健康尚可，强制放松3天"
+                protection["forced_relaxation_until_day"] = day + duration_days
+                return True, (
+                    f"情绪过低({emotion:.1f})且健康尚可，强制放松{duration_days}天"
+                )
             return True, f"情绪过低警告({emotion:.1f})，建议减少干预"
 
         # 条件3：高信任资本 + 健康尚可 = 应该放松
@@ -1106,15 +1287,17 @@ class LongTermStrategyManager(StrategyManager):
             return True, f"高信任({trust:.0f}) + 健康良好({health_score})，优先观察"
 
         # 条件4：连续高强度干预太多天
+        soften_min = config.get("soften_min_health", 5)
         if protection["consecutive_high_intervention_days"] >= config["max_consecutive_high_interventions"]:
-            if health_score >= 5:  # 健康分不是太差
+            if health_score >= soften_min:
                 return True, f"连续{protection['consecutive_high_intervention_days']}天高强度干预，需要缓和"
 
         return False, ""
 
     def _update_intervention_tracking(self, level: int, day: int):
         """v2新增：更新干预追踪"""
-        if level >= 2:  # Level 2/3 视为高强度
+        min_high = self.OVER_INTERVENTION_CONFIG.get("high_intensity_min_level", 2)
+        if level >= min_high:
             self._intervention_protection["consecutive_high_intervention_days"] += 1
         else:
             self._intervention_protection["consecutive_high_intervention_days"] = 0
@@ -1217,7 +1400,8 @@ class LongTermStrategyManager(StrategyManager):
             self.current_phase = RelationshipPhase.RELAPSE
             self.phase_start_day = day
             self.relapse_count += 1
-            self.trust_capital.lose(10, f"第{self.relapse_count}次复发")
+            relapse_loss = self.trust_capital.daily.get("relapse_loss", 10)
+            self.trust_capital.lose(relapse_loss, f"第{self.relapse_count}次复发")
             self._reset_phase_indicators()
             return True
 
@@ -1229,7 +1413,10 @@ class LongTermStrategyManager(StrategyManager):
                 self.current_phase = RelationshipPhase.RELAPSE
                 self.phase_start_day = day
                 self.relapse_count += 1
-                self.trust_capital.lose(10, f"第{self.relapse_count}次复发（健康急降）")
+                relapse_loss = self.trust_capital.daily.get("relapse_loss", 10)
+                self.trust_capital.lose(
+                    relapse_loss, f"第{self.relapse_count}次复发（健康急降）"
+                )
                 self._reset_phase_indicators()
                 return True
 
@@ -1457,14 +1644,15 @@ class LongTermStrategyManager(StrategyManager):
         threshold_bad = self.config["health_threshold_bad"]
         phase_config = self.PHASE_CONFIG[self.current_phase]
         bonus = phase_config["trust_earn_bonus"]
+        daily = self.trust_capital.daily
 
         if health_score >= threshold_good:
             # 表现好
-            base_earn = 2 * bonus
+            base_earn = daily["good_earn"] * bonus
             if was_proactive:
-                base_earn += 3 * bonus  # 主动加成
+                base_earn += daily["proactive_earn"] * bonus  # 主动加成
             if intervention_count == 0:
-                base_earn += 2 * bonus  # 无干预自觉
+                base_earn += daily["no_intervention_earn"] * bonus  # 无干预自觉
             self.trust_capital.earn(base_earn, f"Day {day}: 表现良好")
 
             # 连续天数复利
@@ -1474,19 +1662,19 @@ class LongTermStrategyManager(StrategyManager):
 
         elif health_score < threshold_bad:
             # 表现差
-            loss = 5
+            loss = daily["bad_loss"]
             if self.current_phase == RelationshipPhase.STABLE:
-                loss = 8  # 稳定期复发损失更大
+                loss = daily["stable_bad_loss"]  # 稳定期复发损失更大
             self.trust_capital.lose(loss, f"Day {day}: 表现不佳")
 
     def _check_periodic_reflection(self, day: int):
         """检查并触发周期性反思"""
-        # 周反思（每7天）
-        if day % 7 == 0:
+        weekly = self.reflection_cfg["weekly_period_days"]
+        monthly = self.reflection_cfg["monthly_period_days"]
+        if day % weekly == 0:
             self._generate_weekly_reflection(day)
 
-        # 月总结（每30天）
-        if day % 30 == 0:
+        if day % monthly == 0:
             self._generate_monthly_summary(day)
 
     def _generate_weekly_reflection(self, day: int) -> Dict:
@@ -1496,8 +1684,9 @@ class LongTermStrategyManager(StrategyManager):
         Returns:
             Dict: 周反思内容
         """
-        week_num = day // 7
-        start_day = (week_num - 1) * 7 + 1
+        weekly = self.reflection_cfg["weekly_period_days"]
+        week_num = day // weekly
+        start_day = (week_num - 1) * weekly + 1
 
         # 获取本周数据
         week_health = [h for h in self.health_history if start_day <= h["day"] <= day]
@@ -1514,9 +1703,11 @@ class LongTermStrategyManager(StrategyManager):
         elif avg_health < self.config["health_threshold_bad"]:
             patterns.append("本周需要加强管控")
 
-        if total_interventions > 20:
+        high_th = self.reflection_cfg["weekly_high_intervention_threshold"]
+        low_th = self.reflection_cfg["weekly_low_intervention_threshold"]
+        if total_interventions > high_th:
             patterns.append("干预频率过高，可能引发抵触")
-        elif total_interventions < 5 and avg_health >= 6:
+        elif total_interventions < low_th and avg_health >= 6:
             patterns.append("自主性增强，可考虑减少干预")
 
         reflection = {
@@ -1555,8 +1746,9 @@ class LongTermStrategyManager(StrategyManager):
 
     def _generate_monthly_summary(self, day: int) -> Dict:
         """生成月总结"""
-        month_num = day // 30
-        start_day = (month_num - 1) * 30 + 1
+        monthly = self.reflection_cfg["monthly_period_days"]
+        month_num = day // monthly
+        start_day = (month_num - 1) * monthly + 1
 
         # 获取本月数据
         month_health = [h for h in self.health_history if start_day <= h["day"] <= day]
@@ -1692,11 +1884,12 @@ class LongTermStrategyManager(StrategyManager):
 
         if trust >= config["high_trust_threshold"] and base_level > 0:
             # 高信任资本：强制降级（不再是30%概率）
+            soften_min = config.get("soften_min_health", 5)
             if health_score >= config["health_safe_threshold"]:
                 # 健康分尚可，强制降到观察
                 base_level = 0
                 base_reason = f"高信任({trust:.0f}) + 健康良好({health_score})，观察即可"
-            elif health_score >= 5:
+            elif health_score >= soften_min:
                 # 健康分中等，最多劝说
                 base_level = min(base_level, 1)
                 base_reason += f"（高信任{trust:.0f}，温和提醒）"
@@ -1708,10 +1901,10 @@ class LongTermStrategyManager(StrategyManager):
                 base_level = min(base_level, 1)
                 base_reason += f"（中等信任{trust:.0f}，避免高强度干预）"
 
-        elif autonomy == "minimal" and base_level < 3:
+        elif autonomy == "minimal" and base_level < self.max_intervention_level:
             # 最低自主权，考虑加强干预（保持原逻辑）
             if health_score < 4:  # 只在健康分很差时才升级
-                base_level = min(3, base_level + 1)
+                base_level = min(self.max_intervention_level, base_level + 1)
                 base_reason += "（低信任资本，加强管控）"
 
         # 根据习惯内化阶段调整

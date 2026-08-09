@@ -1,0 +1,505 @@
+{
+  "meta": {
+    "version_id": "v0_baseline",
+    "name": "baseline",
+    "created_at": "2026-08-09T00:00:00Z",
+    "note": "从代码常量抽出的基线默认值（已排除标注删除的三项）"
+  },
+  "simulation": {
+    "subject": {
+      "self_discipline": "medium",
+      "addiction_level": "moderate",
+      "resistance_to_persuasion": 0.5,
+      "initial_health": 75,
+      "habit_formation_speed": "normal"
+    },
+    "health": {
+      "warning_line": 30,
+      "discipline_params": {
+        "high": {
+          "plateau_duration": 14,
+          "decline_rate": 0.5,
+          "mood_sensitivity": 0.7,
+          "violation_penalty": 10,
+          "compliance_bonus": 2,
+          "description": "高自律：平台期长(14天)、每次违规-10"
+        },
+        "medium": {
+          "plateau_duration": 7,
+          "decline_rate": 1.0,
+          "mood_sensitivity": 1.0,
+          "violation_penalty": 12,
+          "compliance_bonus": 1.5,
+          "description": "中自律：平台期中(7天)、每次违规-12"
+        },
+        "low": {
+          "plateau_duration": 3,
+          "decline_rate": 2.0,
+          "mood_sensitivity": 1.5,
+          "violation_penalty": 15,
+          "compliance_bonus": 1,
+          "description": "低自律：平台期短(3天)、每次违规-15"
+        }
+      },
+      "nonlinear": {
+        "warning_line": 30,
+        "improvement_threshold": 14,
+        "max_penalty": -10.0,
+        "habit_bonus": {
+          "per_day": 0.02,
+          "cap": 0.3
+        },
+        "floor_protection": {
+          "lt_30": 0.25,
+          "lt_40": 0.4,
+          "lt_50": 0.6,
+          "lt_60": 0.8,
+          "lt_70": 0.9,
+          "else": 1.0
+        },
+        "health_zones": {
+          "emergency": {
+            "range": [0, 29],
+            "sensitivity": 1.2,
+            "recovery_mult": 0.5,
+            "description": "紧急：需要医疗干预，恢复极其缓慢"
+          },
+          "danger": {
+            "range": [30, 49],
+            "sensitivity": 1.1,
+            "recovery_mult": 0.8,
+            "description": "危险：接近生理极限，微小违规可能崩溃"
+          },
+          "warning": {
+            "range": [50, 69],
+            "sensitivity": 1.05,
+            "recovery_mult": 0.95,
+            "description": "预警：缓冲减少，敏感度上升"
+          },
+          "normal": {
+            "range": [70, 89],
+            "sensitivity": 1.0,
+            "recovery_mult": 1.0,
+            "description": "正常：基线状态"
+          },
+          "safe": {
+            "range": [90, 100],
+            "sensitivity": 0.95,
+            "recovery_mult": 1.05,
+            "description": "安全：生理缓冲充足，小违规影响小"
+          }
+        },
+        "discipline_params": {
+          "high": {
+            "violation_penalty_range": [0.5, 1.5],
+            "cumulative_factor": 0.005,
+            "noise_sigma": 0.3,
+            "resilience": 2.0,
+            "plateau_duration": 14,
+            "description": "高自律：波动极小、抗压强"
+          },
+          "medium": {
+            "violation_penalty_range": [1.5, 2],
+            "cumulative_factor": 0.005,
+            "noise_sigma": 0.4,
+            "resilience": 1.4,
+            "plateau_duration": 7,
+            "description": "中自律：中等波动"
+          },
+          "low": {
+            "violation_penalty_range": [2, 3],
+            "cumulative_factor": 0.005,
+            "noise_sigma": 0.5,
+            "resilience": 1.2,
+            "plateau_duration": 3,
+            "description": "低自律：波动较大"
+          }
+        }
+      }
+    },
+    "relapse": {
+      "base_prob": 0.15,
+      "discipline_mod": {
+        "very_low": 2.0,
+        "low": 1.5,
+        "medium": 1.0,
+        "high": 0.5,
+        "very_high": 0.2
+      },
+      "addiction_mod": {
+        "none": 0.5,
+        "low": 0.8,
+        "moderate": 1.0,
+        "high": 1.5,
+        "severe": 2.0
+      },
+      "time_mod": {
+        "days_divisor": 3,
+        "per_unit": 0.15
+      },
+      "habit_mod": {
+        "streak_factor": 0.03,
+        "floor": 0.3
+      },
+      "tendency_mod": {
+        "tendency_weight": 0.5,
+        "delta_good": -0.05,
+        "delta_bad": 0.2,
+        "delta_relapse": 0.3
+      }
+    },
+    "mood": {
+      "base_score": 6.0,
+      "phase_distributions": {
+        "adjustment": {
+          "max_day": 7,
+          "moods": ["normal", "stressed", "stressed", "depressed"]
+        },
+        "formation": {
+          "max_day": 21,
+          "moods": ["normal", "normal", "stressed"]
+        },
+        "fatigue": {
+          "max_day": null,
+          "moods": ["normal", "normal", "stressed", "depressed"]
+        }
+      },
+      "frequency_penalty": {
+        "per_intervention": -0.5,
+        "floor": -3.0
+      },
+      "intensity_penalty": {
+        "level_1": -0.3,
+        "level_2": -0.6,
+        "level_3": -1.0
+      },
+      "habit_bonus_thresholds": {
+        "14": 1.5,
+        "7": 1.0,
+        "3": 0.5
+      },
+      "neglect_penalty": {
+        "health_lt": 50,
+        "when_no_intervention": -1.0,
+        "health_danger_lt": 40,
+        "when_weak_intervention": -0.5
+      },
+      "plateau_penalty": {
+        "min_level": 2,
+        "amount": -1.5
+      }
+    },
+    "compliance": {
+      "discipline_accept_rate": {
+        "very_low": 0.2,
+        "low": 0.35,
+        "medium": 0.55,
+        "high": 0.75,
+        "very_high": 0.9
+      },
+      "addiction_resistance_mod": {
+        "none": -0.2,
+        "low": -0.1,
+        "moderate": 0.0,
+        "high": 0.15,
+        "severe": 0.25
+      },
+      "discipline_resistance_mod": {
+        "very_low": 0.3,
+        "low": 0.2,
+        "medium": 0.0,
+        "high": -0.1,
+        "very_high": -0.2
+      },
+      "revolt_chance_factor": 0.7,
+      "low_resistance_persuade_threshold": 0.3,
+      "low_resistance_persuade_chance": 0.3
+    },
+    "behavior_scores": {
+      "food_type": {
+        "high_sugar_fat": {"sleep": -1, "weight": -5, "diabetes": -4},
+        "low_sugar_fat": {"sleep": 1, "weight": 3, "diabetes": 2},
+        "high_gi": {"sleep": 0, "weight": -2, "diabetes": -5},
+        "low_gi": {"sleep": 0, "weight": 2, "diabetes": 5},
+        "none": {"sleep": 0, "weight": 0, "diabetes": 0},
+        "processed": {"sleep": -1, "weight": -5, "diabetes": -4},
+        "healthy": {"sleep": 0, "weight": 2, "diabetes": 3}
+      },
+      "food_amount": {
+        "excessive": {"sleep": -2, "weight": -5, "diabetes": -4},
+        "moderate": {"sleep": 1, "weight": 3, "diabetes": 3},
+        "insufficient": {"sleep": 0, "weight": 1, "diabetes": -1},
+        "none": {"sleep": 0, "weight": 0, "diabetes": 0}
+      },
+      "phone_end_time": {
+        "before_22": {"sleep": 5, "weight": 2, "diabetes": 2},
+        "22_to_24": {"sleep": 2, "weight": 1, "diabetes": 1},
+        "0_to_1": {"sleep": -3, "weight": -1, "diabetes": -1},
+        "after_1": {"sleep": -5, "weight": -2, "diabetes": -2}
+      },
+      "phone_activity": {
+        "work": {"sleep": -2, "weight": 0, "diabetes": 0},
+        "gaming": {"sleep": -5, "weight": 0, "diabetes": 0},
+        "video": {"sleep": -3, "weight": 0, "diabetes": 0},
+        "social": {"sleep": -2, "weight": 0, "diabetes": 0},
+        "none": {"sleep": 0, "weight": 0, "diabetes": 0}
+      },
+      "meal_sleep_interval": {
+        "baseline_minutes": 180,
+        "coefficients": {
+          "sleep": 0.03,
+          "weight": 0.02,
+          "diabetes": 0.04
+        }
+      },
+      "continuous_phone": {
+        "baseline_minutes": 30,
+        "coefficient": 0.15
+      }
+    },
+    "habit": {
+      "streak_good_delta": 1,
+      "streak_bad_reset": 0,
+      "tendency_delta_good": -0.05,
+      "tendency_delta_bad": 0.2,
+      "streak_modifier_thresholds": {
+        "5": {"base": 0.5, "intensity_weight": 0.4},
+        "10": {"base": 1.0, "intensity_weight": 0.5},
+        "14": {"base": 1.5, "intensity_weight": 0.7},
+        "21": {"base": 2.0, "intensity_weight": 1.0}
+      },
+      "internalization_thresholds": {
+        "autonomous": 0.8,
+        "internalized": 0.6,
+        "compliant": 0.3
+      }
+    },
+    "satisfaction": {
+      "base_score": 6.0,
+      "intervention_level_weights": {
+        "0": 0.0,
+        "1": -0.3,
+        "2": -0.6,
+        "3": -1.0
+      },
+      "frequency_penalty": {
+        "per_intervention": -0.5,
+        "max_penalty": -2.0
+      },
+      "intervention_reasonability": {
+        "reasonable": 0.5,
+        "preventive": 0.3,
+        "unnecessary": -0.5
+      },
+      "discipline_phase_modifiers": {
+        "adjustment": {"max_day": 7, "base": 0, "intervention_sensitivity": 0.8},
+        "formation": {"max_day": 21, "base": 0.5, "intervention_sensitivity": 1.0},
+        "fatigue": {"max_day": null, "base": -0.5, "intervention_sensitivity": 1.3}
+      },
+      "overintervention": {
+        "min_habit_streak": 7,
+        "min_health_score": 7,
+        "min_level": 2,
+        "base_penalty": -0.5,
+        "health_extra_per_point": -0.2,
+        "streak_extra_per_day": -0.1,
+        "streak_extra_cap_days": 14,
+        "level3_extra": -0.5,
+        "high_count_threshold": 3,
+        "high_count_health": 6,
+        "high_count_extra": -0.2
+      },
+      "autonomy_modifier_cap": 0.5
+    },
+    "composite": {
+      "weights": {
+        "health": 0.5,
+        "satisfaction": 0.3,
+        "effectiveness": 0.2
+      },
+      "effectiveness_thresholds": {
+        "excellent": 2.0,
+        "good": 1.0,
+        "neutral": 0.0,
+        "poor": -1.0
+      },
+      "rating_thresholds": {
+        "A": 8.0,
+        "B": 6.5,
+        "C": 5.0,
+        "D": 3.5
+      }
+    }
+  },
+  "management": {
+    "intervention": {
+      "levels": {
+        "0": "observe",
+        "1": "persuade",
+        "2": "remove",
+        "3": "lock"
+      },
+      "max_level": 3
+    },
+    "tidal": {
+      "scenarios": {
+        "diabetes": {
+          "name": "糖尿病",
+          "health_threshold_bad": 5,
+          "health_threshold_good": 7,
+          "consecutive_good_days_to_relax": 3,
+          "consecutive_bad_days_to_escalate": 1,
+          "relapse_probability_base": 0.4,
+          "severity_weight": 1.5
+        },
+        "weight_loss": {
+          "name": "减肥",
+          "health_threshold_bad": 4,
+          "health_threshold_good": 6,
+          "consecutive_good_days_to_relax": 5,
+          "consecutive_bad_days_to_escalate": 2,
+          "relapse_probability_base": 0.3,
+          "severity_weight": 1.0
+        },
+        "sleep": {
+          "name": "睡眠",
+          "health_threshold_bad": 4,
+          "health_threshold_good": 6,
+          "consecutive_good_days_to_relax": 7,
+          "consecutive_bad_days_to_escalate": 3,
+          "relapse_probability_base": 0.25,
+          "severity_weight": 0.7
+        }
+      },
+      "trust_level": {
+        "initial": 0.5,
+        "good_delta": 0.1,
+        "bad_delta": -0.15,
+        "over_intervention_delta": -0.2,
+        "relax_min": 0.6,
+        "good_streak_bonus_per_day": 0.02,
+        "good_streak_bonus_cap": 0.1,
+        "good_streak_bonus_min_days": 2
+      }
+    },
+    "relationship_phases": {
+      "honeymoon": {
+        "goal": "建立关系和规则",
+        "recommended_style": "supportive",
+        "intervention_modifier": 0.8,
+        "trust_earn_bonus": 1.5,
+        "exit_conditions": {
+          "min_days": 3,
+          "conflict_threshold": 2,
+          "intervention_resistance": 0.3
+        }
+      },
+      "adjustment": {
+        "goal": "形成习惯，处理冲突",
+        "recommended_style": "firm_but_caring",
+        "intervention_modifier": 1.0,
+        "trust_earn_bonus": 1.0,
+        "exit_conditions": {
+          "min_days": 7,
+          "habit_compliance_rate": 0.6,
+          "consecutive_good_days": 5
+        }
+      },
+      "fatigue": {
+        "goal": "维持动力，防止倦怠",
+        "recommended_style": "adaptive",
+        "intervention_modifier": 0.9,
+        "trust_earn_bonus": 1.2,
+        "exit_conditions": {
+          "min_days": 14,
+          "habit_internalization": "internalized",
+          "autonomy_level": "high"
+        }
+      },
+      "stable": {
+        "goal": "维持自主，偶尔提醒",
+        "recommended_style": "gentle",
+        "intervention_modifier": 0.6,
+        "trust_earn_bonus": 0.8,
+        "exit_conditions": null
+      },
+      "relapse": {
+        "goal": "重建习惯，恢复信任",
+        "recommended_style": "strict",
+        "intervention_modifier": 1.3,
+        "trust_earn_bonus": 0.5,
+        "exit_conditions": {
+          "consecutive_good_days": 5
+        }
+      }
+    },
+    "trust_capital": {
+      "initial_capital": 50.0,
+      "max_capital": 100.0,
+      "min_capital": 0.0,
+      "autonomy_thresholds": {
+        "high": 80,
+        "medium": 50,
+        "low": 20
+      },
+      "daily": {
+        "good_earn": 2,
+        "proactive_earn": 3,
+        "no_intervention_earn": 2,
+        "bad_loss": 5,
+        "stable_bad_loss": 8,
+        "relapse_loss": 10
+      }
+    },
+    "habit_consolidation": {
+      "weights": {
+        "no_intervention": 0.4,
+        "proactive": 0.3,
+        "emotion": 0.3
+      },
+      "min_opportunities": 7,
+      "stage_thresholds": {
+        "autonomous": 0.8,
+        "internalized": 0.6,
+        "compliant": 0.3
+      }
+    },
+    "manager_learning": {
+      "success_understanding_delta_factor": 0.02,
+      "fail_understanding_delta": 0.005,
+      "cycle_understanding_delta_factor": 0.05,
+      "efficiency_delta_low_level": 0.02,
+      "efficiency_delta_high_level": 0.01,
+      "early_intervention_base": 50.0,
+      "early_intervention_understanding_scale": 20.0,
+      "efficiency_from_understanding_scale": 0.5,
+      "efficiency_downgrade": {
+        "high": 1.3,
+        "medium": 1.1,
+        "medium_min_base_level": 2
+      },
+      "trend_understanding_min": 0.5,
+      "trend_avg_delta_threshold": -1
+    },
+    "over_intervention": {
+      "emotion_warning_threshold": 3.0,
+      "emotion_critical_threshold": 2.5,
+      "high_trust_threshold": 80,
+      "medium_trust_threshold": 50,
+      "health_safe_threshold": 6,
+      "max_consecutive_high_interventions": 5,
+      "forced_relaxation": {
+        "low_emotion_days": 3,
+        "duration_days": 3
+      },
+      "high_intensity_min_level": 2,
+      "soften_min_health": 5
+    },
+    "reflection": {
+      "weekly_period_days": 7,
+      "monthly_period_days": 30,
+      "weekly_high_intervention_threshold": 20,
+      "weekly_low_intervention_threshold": 5
+    }
+  }
+}

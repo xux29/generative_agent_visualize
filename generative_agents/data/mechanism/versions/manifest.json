@@ -1,0 +1,12 @@
+{
+  "active_id": "v0_baseline",
+  "versions": [
+    {
+      "id": "v0_baseline",
+      "name": "baseline",
+      "created_at": "2026-08-09T00:00:00Z",
+      "note": "从代码常量抽出的基线默认值",
+      "file": "v0_baseline.json"
+    }
+  ]
+}

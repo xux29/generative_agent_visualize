@@ -14,6 +14,7 @@ import datetime
 from modules import utils
 from modules.intention import Intention
 from modules.strategy import Strategy, StrategyManager
+from modules.mechanism_config import get_path
 
 
 class HealthAgentMixin:
@@ -39,7 +40,26 @@ class HealthAgentMixin:
             self.is_supervised = True
             self.is_supervisor = False
             self.supervisor_name = monitor_config.get("supervisor", "")
-            self.self_discipline = monitor_config.get("self_discipline", "medium")
+            self.self_discipline = monitor_config.get(
+                "self_discipline",
+                get_path("simulation.subject.self_discipline", "medium"),
+            )
+            self.addiction_level = monitor_config.get(
+                "addiction_level",
+                get_path("simulation.subject.addiction_level", "moderate"),
+            )
+            self.resistance_to_persuasion = monitor_config.get(
+                "resistance_to_persuasion",
+                get_path("simulation.subject.resistance_to_persuasion", 0.5),
+            )
+            self.initial_health = monitor_config.get(
+                "initial_health",
+                get_path("simulation.subject.initial_health", 75),
+            )
+            self.habit_formation_speed = monitor_config.get(
+                "habit_formation_speed",
+                get_path("simulation.subject.habit_formation_speed", "normal"),
+            )
             self.health_status = monitor_config.get("health_status", {})
 
             # Target 特有属性
@@ -83,7 +103,26 @@ class HealthAgentMixin:
         """初始化健康管理相关属性"""
         # Target Agent 属性
         if hasattr(self, 'is_supervised') and self.is_supervised:
-            self.self_discipline = config.get("self_discipline", "medium")
+            self.self_discipline = config.get(
+                "self_discipline",
+                get_path("simulation.subject.self_discipline", "medium"),
+            )
+            self.addiction_level = config.get(
+                "addiction_level",
+                get_path("simulation.subject.addiction_level", "moderate"),
+            )
+            self.resistance_to_persuasion = config.get(
+                "resistance_to_persuasion",
+                get_path("simulation.subject.resistance_to_persuasion", 0.5),
+            )
+            self.initial_health = config.get(
+                "initial_health",
+                get_path("simulation.subject.initial_health", 75),
+            )
+            self.habit_formation_speed = config.get(
+                "habit_formation_speed",
+                get_path("simulation.subject.habit_formation_speed", "normal"),
+            )
             self.habit_streak = config.get("habit_streak", 0)
             self.current_mood = config.get("current_mood", "normal")
             self.current_intention = None
@@ -110,15 +149,33 @@ class HealthAgentMixin:
         if not (hasattr(self, 'is_supervised') and self.is_supervised):
             return
 
-        if day <= 7:
-            # 磨合期：更容易压力大
-            moods = ["normal", "stressed", "stressed", "depressed"]
-        elif day <= 21:
-            # 习惯养成期：逐渐稳定
-            moods = ["normal", "normal", "stressed"]
-        else:
-            # 倦怠期：可能厌倦
-            moods = ["normal", "normal", "stressed", "depressed"]
+        phases = get_path(
+            "simulation.mood.phase_distributions",
+            {
+                "adjustment": {
+                    "max_day": 7,
+                    "moods": ["normal", "stressed", "stressed", "depressed"],
+                },
+                "formation": {
+                    "max_day": 21,
+                    "moods": ["normal", "normal", "stressed"],
+                },
+                "fatigue": {
+                    "max_day": None,
+                    "moods": ["normal", "normal", "stressed", "depressed"],
+                },
+            },
+        )
+        moods = None
+        for key in ("adjustment", "formation", "fatigue"):
+            phase = phases.get(key) or {}
+            max_day = phase.get("max_day")
+            phase_moods = phase.get("moods") or []
+            if max_day is None or day <= max_day:
+                moods = phase_moods
+                break
+        if not moods:
+            moods = ["normal"]
 
         self.current_mood = random.choice(moods)
 
@@ -133,17 +190,19 @@ class HealthAgentMixin:
             return
 
         if complied_today:
-            self.habit_streak += 1
+            self.habit_streak += int(get_path("simulation.habit.streak_good_delta", 1))
             self.days_since_last_bad_behavior += 1
             self.is_in_relapse = False
-            # 表现好时，复发倾向缓慢下降
-            self.relapse_tendency = max(0.0, self.relapse_tendency - 0.05)
+            # 表现好时，复发倾向缓慢下降（tendency_delta_good 为负值）
+            delta_good = get_path("simulation.habit.tendency_delta_good", -0.05)
+            self.relapse_tendency = max(0.0, self.relapse_tendency + delta_good)
         else:
-            self.habit_streak = 0
+            self.habit_streak = int(get_path("simulation.habit.streak_bad_reset", 0))
             self.days_since_last_bad_behavior = 0
             self.is_in_relapse = True
             # 表现差时，复发倾向增加
-            self.relapse_tendency = min(1.0, self.relapse_tendency + 0.2)
+            delta_bad = get_path("simulation.habit.tendency_delta_bad", 0.2)
+            self.relapse_tendency = min(1.0, self.relapse_tendency + delta_bad)
 
         # 记录行为质量历史
         self.behavior_quality_history.append({
@@ -171,41 +230,59 @@ class HealthAgentMixin:
             return 0.0
 
         # 基础复发概率
-        base_prob = 0.15
+        base_prob = get_path("simulation.relapse.base_prob", 0.15)
 
         # 自律程度修正
-        discipline_modifiers = {
-            "very_low": 2.0,   # 自律极低，非常容易复发
-            "low": 1.5,
-            "medium": 1.0,
-            "high": 0.5,
-            "very_high": 0.2,
-        }
-        discipline_mod = discipline_modifiers.get(
-            getattr(self, 'self_discipline', 'medium'), 1.0
+        discipline_modifiers = get_path(
+            "simulation.relapse.discipline_mod",
+            {
+                "very_low": 2.0,
+                "low": 1.5,
+                "medium": 1.0,
+                "high": 0.5,
+                "very_high": 0.2,
+            },
         )
+        discipline = getattr(
+            self,
+            "self_discipline",
+            get_path("simulation.subject.self_discipline", "medium"),
+        )
+        discipline_mod = discipline_modifiers.get(discipline, 1.0)
 
         # 成瘾程度修正
-        addiction_modifiers = {
-            "none": 0.5,
-            "low": 0.8,
-            "moderate": 1.0,
-            "high": 1.5,
-            "severe": 2.0,
-        }
-        addiction_mod = addiction_modifiers.get(
-            getattr(self, 'addiction_level', 'moderate'), 1.0
+        addiction_modifiers = get_path(
+            "simulation.relapse.addiction_mod",
+            {
+                "none": 0.5,
+                "low": 0.8,
+                "moderate": 1.0,
+                "high": 1.5,
+                "severe": 2.0,
+            },
         )
+        addiction = getattr(
+            self,
+            "addiction_level",
+            get_path("simulation.subject.addiction_level", "moderate"),
+        )
+        addiction_mod = addiction_modifiers.get(addiction, 1.0)
 
         # 放松时间修正（放松越久，越容易复发）
-        # 公式：每放松3天，概率增加15%
-        time_mod = 1.0 + (days_relaxed / 3) * 0.15
+        days_divisor = get_path("simulation.relapse.time_mod.days_divisor", 3)
+        per_unit = get_path("simulation.relapse.time_mod.per_unit", 0.15)
+        time_mod = 1.0 + (days_relaxed / days_divisor) * per_unit
 
         # 习惯稳固程度修正（习惯越稳固，越不容易复发）
-        habit_mod = max(0.3, 1.0 - self.habit_streak * 0.03)
+        streak_factor = get_path("simulation.relapse.habit_mod.streak_factor", 0.03)
+        habit_floor = get_path("simulation.relapse.habit_mod.floor", 0.3)
+        habit_mod = max(habit_floor, 1.0 - self.habit_streak * streak_factor)
 
         # 复发倾向修正
-        tendency_mod = 1.0 + self.relapse_tendency * 0.5
+        tendency_weight = get_path(
+            "simulation.relapse.tendency_mod.tendency_weight", 0.5
+        )
+        tendency_mod = 1.0 + self.relapse_tendency * tendency_weight
 
         # 综合计算
         relapse_prob = base_prob * discipline_mod * addiction_mod * time_mod * habit_mod * tendency_mod
@@ -242,7 +319,10 @@ class HealthAgentMixin:
         # 随机判断是否复发
         if random.random() < relapse_prob:
             self.is_in_relapse = True
-            self.relapse_tendency = min(1.0, self.relapse_tendency + 0.3)
+            delta_relapse = get_path(
+                "simulation.relapse.tendency_mod.delta_relapse", 0.3
+            )
+            self.relapse_tendency = min(1.0, self.relapse_tendency + delta_relapse)
             return True
 
         return False
@@ -745,23 +825,58 @@ class HealthAgentMixin:
         supervisor_name = self.monitor_config.get("supervisor", "Manager")
 
         # 获取抵抗程度（0-1，越高越难被劝服）
-        resistance = getattr(self, 'resistance_to_persuasion', 0.5)
+        resistance = getattr(
+            self,
+            "resistance_to_persuasion",
+            get_path("simulation.subject.resistance_to_persuasion", 0.5),
+        )
 
         # 获取成瘾程度
-        addiction_level = getattr(self, 'addiction_level', 'moderate')
-        addiction_modifier = {
-            'none': -0.2, 'low': -0.1, 'moderate': 0.0,
-            'high': 0.15, 'severe': 0.25
-        }.get(addiction_level, 0.0)
+        addiction_level = getattr(
+            self,
+            "addiction_level",
+            get_path("simulation.subject.addiction_level", "moderate"),
+        )
+        addiction_modifier = get_path(
+            "simulation.compliance.addiction_resistance_mod",
+            {
+                "none": -0.2,
+                "low": -0.1,
+                "moderate": 0.0,
+                "high": 0.15,
+                "severe": 0.25,
+            },
+        ).get(addiction_level, 0.0)
 
         # 获取自律程度的修正
-        discipline_modifier = {
-            'very_low': 0.3,  # 自律极低的人更容易抵抗劝说
-            'low': 0.2,
-            'medium': 0.0,
-            'high': -0.1,
-            'very_high': -0.2
-        }.get(self.self_discipline, 0.0)
+        discipline_modifier = get_path(
+            "simulation.compliance.discipline_resistance_mod",
+            {
+                "very_low": 0.3,
+                "low": 0.2,
+                "medium": 0.0,
+                "high": -0.1,
+                "very_high": -0.2,
+            },
+        ).get(self.self_discipline, 0.0)
+
+        accept_rates = get_path(
+            "simulation.compliance.discipline_accept_rate",
+            {
+                "very_low": 0.2,
+                "low": 0.35,
+                "medium": 0.55,
+                "high": 0.75,
+                "very_high": 0.9,
+            },
+        )
+        revolt_factor = get_path("simulation.compliance.revolt_chance_factor", 0.7)
+        low_res_threshold = get_path(
+            "simulation.compliance.low_resistance_persuade_threshold", 0.3
+        )
+        low_res_chance = get_path(
+            "simulation.compliance.low_resistance_persuade_chance", 0.3
+        )
 
         try:
             output = self.completion(
@@ -786,9 +901,8 @@ class HealthAgentMixin:
 
                 # 如果LLM判断接受，基于性格特征可能会反悔
                 if accept:
-                    # 关键改进：反悔概率大幅提升
                     # 低自律 + 高成瘾 + 高抵抗 = 高反悔概率
-                    revolt_chance = effective_resistance * 0.7  # 从0.3提高到0.7
+                    revolt_chance = effective_resistance * revolt_factor
 
                     if random.random() < revolt_chance:
                         self.logger.info(
@@ -802,7 +916,10 @@ class HealthAgentMixin:
                     return True
                 else:
                     # LLM 已判断不接受，只有极低抵抗者有小概率被说服
-                    if effective_resistance < 0.3 and random.random() < 0.3:
+                    if (
+                        effective_resistance < low_res_threshold
+                        and random.random() < low_res_chance
+                    ):
                         self.logger.info(
                             f"{self.name} initially resisted but reconsidered "
                             f"(effective_resistance={effective_resistance:.2f})"
@@ -813,14 +930,8 @@ class HealthAgentMixin:
                     self.logger.info(f"{self.name} resists persuasion (effective_resistance={effective_resistance:.2f})")
                     return False
             else:
-                # Fallback: 基于自律程度决定
-                discipline_accept_rate = {
-                    'very_low': 0.2,
-                    'low': 0.35,
-                    'medium': 0.55,
-                    'high': 0.75,
-                    'very_high': 0.9
-                }.get(self.self_discipline, 0.5)
+                # Fallback: 基于自律程度决定（无干预自觉率）
+                discipline_accept_rate = accept_rates.get(self.self_discipline, 0.5)
 
                 if random.random() < discipline_accept_rate:
                     self.current_intention.interrupt()
@@ -829,14 +940,8 @@ class HealthAgentMixin:
 
         except Exception as e:
             self.logger.error(f"Failed to react to persuasion: {e}")
-            # Fallback: 基于自律程度决定
-            discipline_accept_rate = {
-                'very_low': 0.2,
-                'low': 0.35,
-                'medium': 0.55,
-                'high': 0.75,
-                'very_high': 0.9
-            }.get(self.self_discipline, 0.5)
+            # Fallback: 基于自律程度决定（无干预自觉率）
+            discipline_accept_rate = accept_rates.get(self.self_discipline, 0.5)
 
             if random.random() < discipline_accept_rate:
                 self.current_intention.interrupt()
@@ -889,7 +994,7 @@ class HealthAgentMixin:
         )
 
         # 计算健康分
-        from modules.scorer import Scorer
+        from modules.scorer_nonlinear import Scorer
         health_score = 0
         score_breakdown = ""
 

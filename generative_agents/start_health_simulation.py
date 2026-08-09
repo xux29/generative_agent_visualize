@@ -33,14 +33,61 @@ from dotenv import load_dotenv, find_dotenv
 from modules.game import create_game, get_game
 from modules import utils
 from modules.scenario_config import get_scenario_config
-from modules.scorer import Scorer, CumulativeHealthScorer, SelfDisciplineLevel, InitialHealthScore
-from modules.scorer_nonlinear import NonlinearHealthScorer
+from modules.scorer_nonlinear import (
+    NonlinearHealthScorer,
+    Scorer,
+    SelfDisciplineLevel,
+    InitialHealthScore,
+)
+# 线性 CumulativeHealthScorer 仅用于兼容旧 checkpoint；主路径为非线性
+from modules.scorer import CumulativeHealthScorer
 from modules.strategy import Strategy, StrategyManager, LongTermStrategyManager
 from modules.asymmetric_game import AsymmetricGameEngine, ManagerGoalType
 from modules.intention import Intention
+from modules.mechanism_config import (
+    MECHANISM_DATA_DIR,
+    get_mechanism_config,
+    load_mechanism_config,
+)
 
 # 用于模拟完成后自动分析结果
 import analyze_health
+
+
+def resolve_and_load_mechanism_config(
+    mechanism_config: str | None = None,
+    mechanism_version: str | None = None,
+):
+    """按 CLI 参数加载机制配置进进程（默认不改 active.json）。
+
+    优先级：
+    - ``--mechanism-version``：只 load ``versions/<id>.json`` 进进程，不 activate
+    - ``--mechanism-config``：load 指定 JSON 路径
+    - 否则：load ``data/mechanism/active.json``
+    """
+    if mechanism_config and mechanism_version:
+        raise SystemExit("不能同时指定 --mechanism-config 与 --mechanism-version")
+
+    if mechanism_version:
+        path = MECHANISM_DATA_DIR / "versions" / f"{mechanism_version}.json"
+        if not path.is_file():
+            raise SystemExit(f"机制版本不存在: {mechanism_version} ({path})")
+        cfg = load_mechanism_config(str(path))
+        print(
+            f"[mechanism] 已加载版本进进程（不修改 active.json）: {mechanism_version}"
+        )
+    elif mechanism_config:
+        cfg = load_mechanism_config(mechanism_config)
+        print(f"[mechanism] 已加载配置文件: {mechanism_config}")
+    else:
+        cfg = load_mechanism_config()
+        print("[mechanism] 已加载 active.json")
+
+    meta = cfg.get("meta", {}) or {}
+    version_id = meta.get("version_id", "?")
+    name = meta.get("name", "?")
+    print(f"[mechanism] version_id={version_id}  name={name}")
+    return cfg
 
 
 class HealthSimulation:
@@ -59,7 +106,7 @@ class HealthSimulation:
                  initial_health: int = 75,
                  discipline_level: str = "medium",
                  resume_mode: bool = False,
-                 scoring_mode: str = "linear"):
+                 scoring_mode: str = "nonlinear"):
         """初始化健康模拟
 
         Args:
@@ -83,6 +130,13 @@ class HealthSimulation:
         self.initial_health = initial_health
         self.discipline_level = discipline_level
         self.scoring_mode = scoring_mode  # 评分模式
+
+        # 机制配置版本（由入口 load_mechanism_config 注入进程单例）
+        try:
+            _meta = get_mechanism_config().get("meta", {}) or {}
+            self.mechanism_version_id = _meta.get("version_id")
+        except Exception:
+            self.mechanism_version_id = None
 
         # Load scenario configuration
         self.scenario = get_scenario_config(scenario_name)
@@ -491,6 +545,7 @@ class HealthSimulation:
         state["initial_health"] = self.initial_health
         state["discipline_level"] = self.discipline_level
         state["scoring_mode"] = self.scoring_mode  # 保存评分模式
+        state["mechanism_version_id"] = getattr(self, "mechanism_version_id", None)
 
         # Save state file
         with open(self.state_file, 'w', encoding='utf-8') as f:
@@ -2766,6 +2821,7 @@ class HealthSimulation:
 
         # Add cumulative health summary for replay
         checkpoint_data["health_summary"] = self.cumulative_health_scorer.get_summary()
+        checkpoint_data["mechanism_version_id"] = getattr(self, "mechanism_version_id", None)
 
         # Save checkpoint file
         checkpoint_file = f"{self.checkpoints_folder}/simulate-{time_str.replace(':', '')}.json"
@@ -3144,6 +3200,7 @@ class HealthSimulation:
                 "map_folder": self.scenario.map_folder,
                 "export_time": datetime.datetime.now().isoformat(),
                 "scoring_mode": self.scoring_mode,  # 评分模式
+                "mechanism_version_id": getattr(self, "mechanism_version_id", None),
             },
             "profile_config": {
                 "target_profile": self.scenario.target_profile,
@@ -3521,7 +3578,7 @@ def run_single_experiment(args):
             "discipline": discipline,
             "final_score": sim.cumulative_health_scorer.current_score,
             "status": sim.cumulative_health_scorer.get_health_status(),
-            "success": sim.cumulative_health_scorer.current_score >= CumulativeHealthScorer.WARNING_LINE,
+            "success": sim.cumulative_health_scorer.current_score >= NonlinearHealthScorer.WARNING_LINE,
             "result_path": str(sim.result_path)
         }
     except Exception as e:
@@ -3540,7 +3597,17 @@ def run_single_experiment(args):
     return result
 
 
-def run_all_experiments(scenario: str, days: int, config_path: str, batch_mode: bool, verbose: str, scoring_mode: str = "linear", parallel: int = 0):
+def run_all_experiments(
+    scenario: str,
+    days: int,
+    config_path: str,
+    batch_mode: bool,
+    verbose: str,
+    scoring_mode: str = "nonlinear",
+    parallel: int = 0,
+    mechanism_config: str | None = None,
+    mechanism_version: str | None = None,
+):
     """运行所有9种实验组合（3种初始分 × 3种自律程度）
 
     Args:
@@ -3551,6 +3618,8 @@ def run_all_experiments(scenario: str, days: int, config_path: str, batch_mode: 
         verbose: 日志级别
         scoring_mode: 评分模式（linear/nonlinear）
         parallel: 并行进程数（0=串行，>0=并行）
+        mechanism_config: 可选机制配置 JSON 路径
+        mechanism_version: 可选机制版本 id（子进程同样只 load 不 activate）
     """
     print("\n" + "=" * 70)
     print("  健康管理模拟 - 9种实验组合（2026-01-23 设计）")
@@ -3615,6 +3684,10 @@ def run_all_experiments(scenario: str, days: int, config_path: str, batch_mode: 
             ]
             if batch_mode:
                 cmd.append("--batch")
+            if mechanism_config:
+                cmd.extend(["--mechanism-config", mechanism_config])
+            if mechanism_version:
+                cmd.extend(["--mechanism-version", mechanism_version])
 
             # 创建临时配置文件（包含不同的API key）
             with open(config_path, 'r', encoding='utf-8') as f:
@@ -3719,7 +3792,7 @@ def run_all_experiments(scenario: str, days: int, config_path: str, batch_mode: 
                 "discipline": discipline,
                 "final_score": final_score,
                 "status": sim.cumulative_health_scorer.get_health_status(),
-                "success": final_score >= CumulativeHealthScorer.WARNING_LINE,
+                "success": final_score >= NonlinearHealthScorer.WARNING_LINE,
                 "result_path": result_folder
             })
             print(f"  实验 {i} 完成: 最终健康分 = {final_score:.1f}")
@@ -3822,11 +3895,29 @@ Examples:
                         help="Self-discipline level (low/medium/high). Default: medium")
     parser.add_argument("--run-all", action="store_true",
                         help="Run all 9 experiment combinations (3 initial scores × 3 discipline levels)")
-    parser.add_argument("--scoring", type=str, default="linear",
+    parser.add_argument("--scoring", type=str, default="nonlinear",
                         choices=["linear", "nonlinear"],
-                        help="Health scoring mode: linear (CumulativeHealthScorer) or nonlinear (NonlinearHealthScorer). Default: linear")
+                        help="Health scoring mode: nonlinear (default) or linear (legacy CumulativeHealthScorer)")
+    parser.add_argument(
+        "--mechanism-config",
+        type=str,
+        default=None,
+        help="可选：加载指定机制配置 JSON（进进程，不改 active）",
+    )
+    parser.add_argument(
+        "--mechanism-version",
+        type=str,
+        default=None,
+        help="可选：加载指定机制版本进进程（不 activate / 不改 active.json）",
+    )
 
     args = parser.parse_args()
+
+    # 机制参数：启动时加载进进程单例
+    resolve_and_load_mechanism_config(
+        mechanism_config=args.mechanism_config,
+        mechanism_version=args.mechanism_version,
+    )
 
     # 运行所有9种实验
     if args.run_all:
@@ -3837,7 +3928,9 @@ Examples:
             batch_mode=args.batch,
             verbose=args.verbose,
             scoring_mode=args.scoring,
-            parallel=args.parallel
+            parallel=args.parallel,
+            mechanism_config=args.mechanism_config,
+            mechanism_version=args.mechanism_version,
         )
         return
 
