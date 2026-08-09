@@ -12,13 +12,13 @@
     "think": {
       "llm": {
          "provider": "openai",
-        "model": "MiniMaxAI/MiniMax-M2.5",
+        "model": "deepseek-ai/DeepSeek-V4-Flash",
         "base_url": "https://api.siliconflow.cn/v1",
         "api_key": "sk-ooanryntbpmpkyizhrpyiiwdyqdgtnjlgjxuneozakzqsrqf",
 
         "fallback": {
         "provider": "openai",
-        "model": "MiniMaxAI/MiniMax-M2.5",
+        "model": "deepseek-ai/DeepSeek-V4-Flash",
         "base_url": "https://api.siliconflow.cn/v1",
         "api_key": "sk-pisyqhomrjpnsuxgodupbdsaipkvackkkffpftcgyybvmuvk",
         "api_keys": [

@@ -3,11 +3,10 @@
 非线性健康分计算系统 + 满意度/心情/行为分项/综合评估（Scorer）
 
 健康分核心（NonlinearHealthScorer）：
-1. 阈值效应：不同健康区间有不同的敏感度和恢复速度
-2. 边际递减：恢复速度随距离目标的距离而变化
-3. 累积效应：连续违规产生复合影响
-4. 随机波动：模拟日常生理/心理变异
-5. 个体差异：同等级内参数有分布范围
+1. 阈值效应：不同健康区间有不同的敏感度
+2. 累积效应：连续违规产生复合影响
+3. 随机波动：模拟日常生理/心理变异
+4. 个体差异：同等级内参数有分布范围
 
 满意度 / 心情 / 行为扣分 / 综合评估：见本文件末尾 `Scorer` 类
 （已从 scorer.py 迁入；后续只在本文件修改）。
@@ -55,7 +54,7 @@ def _resolve_nonlinear_discipline_params(
     level: SelfDisciplineLevel,
     hardcoded: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """合并 nonlinear 自律参数；natural_recovery_range 始终硬编码。"""
+    """合并 nonlinear 自律参数。"""
     cfg = get_path(
         f"simulation.health.nonlinear.discipline_params.{level.value}",
         default=None,
@@ -63,7 +62,6 @@ def _resolve_nonlinear_discipline_params(
     if not isinstance(cfg, dict):
         return dict(hardcoded)
     merged = dict(hardcoded)
-    natural_range = hardcoded.get("natural_recovery_range")
     for key, value in cfg.items():
         if key in ("natural_recovery", "natural_recovery_range"):
             continue
@@ -71,8 +69,6 @@ def _resolve_nonlinear_discipline_params(
             merged[key] = (value[0], value[1])
         else:
             merged[key] = value
-    if natural_range is not None:
-        merged["natural_recovery_range"] = natural_range
     return merged
 
 
@@ -146,8 +142,6 @@ class NonlinearHealthScorer:
         SelfDisciplineLevel.HIGH: {
             # 违规惩罚范围（每次违规的基础扣分）
             "violation_penalty_range": (0.5, 1.5),      # 每次违规扣0.5-1.5分
-            # 自然恢复范围（每天无违规时的基础恢复分）
-            "natural_recovery_range": (1.0, 1.5),       # 适当降低
             # 累积系数（连续违规的复合影响系数）
             "cumulative_factor": 0.005,  # 极低累积效应
             # 日常波动标准差（生理/心理变异）
@@ -160,7 +154,6 @@ class NonlinearHealthScorer:
         },
         SelfDisciplineLevel.MEDIUM: {
             "violation_penalty_range": (1.5, 2),      # 每次违规扣1.5-2分
-            "natural_recovery_range": (1.0, 1.5),   # 适当降低
             "cumulative_factor": 0.005,
             "noise_sigma": 0.4,
             "resilience": 1.4,
@@ -169,7 +162,6 @@ class NonlinearHealthScorer:
         },
         SelfDisciplineLevel.LOW: {
             "violation_penalty_range": (2, 3),    # 每次违规扣2-3分
-            "natural_recovery_range": (1.0, 2.0),    # 适当降低
             "cumulative_factor": 0.005,  # 极低累积效应（每多一天只+0.5%）
             "noise_sigma": 0.5,
             "resilience": 1.2,
@@ -236,12 +228,6 @@ class NonlinearHealthScorer:
             "simulation.health.nonlinear.improvement_threshold",
             default=14,
         )
-        habit_bonus_cfg = get_path(
-            "simulation.health.nonlinear.habit_bonus",
-            default=None,
-        ) or {}
-        self.habit_bonus_per_day = habit_bonus_cfg.get("per_day", 0.02)
-        self.habit_bonus_cap = habit_bonus_cfg.get("cap", 0.3)
         floor_cfg = get_path(
             "simulation.health.nonlinear.floor_protection",
             default=None,
@@ -376,29 +362,7 @@ class NonlinearHealthScorer:
                         # 暴露遵从奖励规模因子以便诊断
                         breakdown["components"]["compliance_scale"] = getattr(self, '_last_compliance_scale', 1.0)
 
-        # 3. 自然恢复（非线性）
-        # 每天都允许自然恢复，但违规日采用折减系数，避免恢复过强。
-        if self.current_score < self.initial_score:
-            recovery = self._calculate_natural_recovery(
-                current_score=self.current_score,
-                initial_score=self.initial_score,
-                consecutive_good_days=self.consecutive_good_days
-            )
-            recovery_scale = 0.3 if had_violation else 1.0
-            recovery *= recovery_scale
-            change += recovery
-            breakdown["components"]["natural_recovery"] = recovery
-            breakdown["components"]["recovery_scale"] = recovery_scale
-            breakdown["components"]["recovery_components"] = {
-                "distance_factor": self._calculate_distance_factor(
-                    self.current_score, self.initial_score
-                ),
-                "zone_mult": self._get_zone_recovery_mult(self.current_score),
-                "habit_bonus": self._calculate_habit_bonus(self.consecutive_good_days),
-                "base_boost": getattr(self, '_last_base_boost', 1.0)
-            }
-
-        # 4. 平台期检测
+        # 3. 平台期检测
         if self.consecutive_good_days >= self.params["plateau_duration"]:
             if not self.in_plateau:
                 self.in_plateau = True
@@ -406,7 +370,7 @@ class NonlinearHealthScorer:
                 breakdown["components"]["entered_plateau"] = True
             self.plateau_days += 1
 
-        # 5. 持续恶化的加速下滑（非线性）
+        # 4. 持续恶化的加速下滑（非线性）
         if self.consecutive_bad_days >= 3:
             # 【改进】计算预估的新分数，如果将低于35则禁用加速下滑
             projected_score = self.current_score + change
@@ -417,7 +381,7 @@ class NonlinearHealthScorer:
             change += acceleration
             breakdown["components"]["decline_acceleration"] = acceleration
 
-        # 6. 【新增】限制每日最大扣分（防止单日扣分过多）
+        # 5. 【新增】限制每日最大扣分（防止单日扣分过多）
         max_penalty = self.max_penalty  # 来自 mechanism config / 默认 -10
         if change < max_penalty:
             original_change = change
@@ -428,13 +392,13 @@ class NonlinearHealthScorer:
                 "reduction": original_change - max_penalty
             }
 
-        # 7. 添加日常波动（随机性）
+        # 6. 添加日常波动（随机性）
         noise = self._add_daily_noise(change)
         if abs(noise) > 0.01:  # 只在噪声显著时记录
             change += noise
             breakdown["components"]["daily_noise"] = noise
 
-        # 8. 更新当前分数
+        # 7. 更新当前分数
         new_score = self.current_score + change
 
         # 限制分数在 [floor_score, 100] 之间，确保不会降到低于下限（如0）
@@ -552,102 +516,6 @@ class NonlinearHealthScorer:
     def _calculate_blocked_violation_penalty(self) -> float:
         """计算被阻止的违规——不扣分（因为被阻止了）"""
         return 0.0
-
-    def _calculate_natural_recovery(
-        self,
-        current_score: float,
-        initial_score: float,
-        consecutive_good_days: int
-    ) -> float:
-        """计算非线性自然恢复（含底线增强）
-
-        公式：
-        recovery = base_recovery * distance_factor * zone_mult * habit_mult * floor_boost
-
-        where:
-            base_recovery ~ Uniform(min, max)
-            distance_factor = sqrt(1 - current / initial)  # 边际递减
-            zone_mult = 健康区间恢复速度倍数
-            habit_mult = 1.0 + min(0.3, consecutive_good_days * 0.02)
-            floor_boost = 底线增强系数（健康分越低，恢复越强）
-        """
-        params = self.params
-
-        # 1. 随机基础恢复（个体差异）
-        recovery_min, recovery_max = params["natural_recovery_range"]
-        base_recovery = random.uniform(recovery_min, recovery_max)
-
-        # 当分数较低时，加强随机基础恢复（增加 base_recovery 的波动/均值）
-        # 低分时给出更高的 base_boost，使得随机基础恢复在紧急区更具弹性
-        if current_score < 30:
-            base_boost = 1.8
-        elif current_score < 40:
-            base_boost = 1.4
-        elif current_score < 50:
-            base_boost = 1.2
-        else:
-            base_boost = 1.0
-
-        base_recovery *= base_boost
-        # 记录以便上层把它放入 breakdown
-        self._last_base_boost = base_boost
-
-        # 2. 边际递减系数（距离目标越远，恢复潜力越大）
-        distance_factor = self._calculate_distance_factor(current_score, initial_score)
-
-        # 3. 阈值恢复速度
-        zone_recovery_mult = self._get_zone_recovery_mult(current_score)
-
-        # 4. 习惯养成加成
-        habit_mult = 1.0 + self._calculate_habit_bonus(consecutive_good_days)
-
-        # 5. 【底线增强】健康分越低，恢复越强（模拟医疗干预）
-        # 注意：增强系数需要和 floor_protection 配合，避免分数粘在地板上
-        if current_score < 30:
-            floor_boost = 6.0    # 紧急区：6倍恢复（平衡之前的35%惩罚保护）
-        elif current_score < 40:
-            floor_boost = 4.0    # 危险区：4倍恢复
-        elif current_score < 50:
-            floor_boost = 2.0    # 预警区：2倍恢复
-        else:
-            floor_boost = 1.0    # 正常恢复
-
-        # 6. 综合计算
-        recovery = (
-            base_recovery
-            * distance_factor
-            * zone_recovery_mult
-            * habit_mult
-            * floor_boost
-        )
-
-        # 确保不超过初始分
-        recovery = max(0, min(recovery, initial_score - current_score))
-
-        return recovery
-
-    def _calculate_distance_factor(self, current: float, target: float) -> float:
-        """计算边际递减因子
-
-        使用平方根函数：越接近目标，改善越困难
-        当current < 0时，返回最大值1.0（透支状态需要最大恢复力度）
-        """
-        if current >= target:
-            return 0.0
-
-        if current < 0:
-            # 透支状态：返回最大恢复因子
-            return 1.0
-
-        distance_ratio = 1.0 - (current / target)
-        return math.sqrt(distance_ratio)
-
-    def _calculate_habit_bonus(self, consecutive_good_days: int) -> float:
-        """计算习惯养成加成（最多+30%，系数可外置）"""
-        return min(
-            self.habit_bonus_cap,
-            consecutive_good_days * self.habit_bonus_per_day,
-        )
 
     def _check_discipline_improvement(self, had_violation: bool) -> bool:
         """【新增】检查并应用自律提升机制
@@ -2436,15 +2304,6 @@ class Scorer:
         compliance_modifier = (compliance_rate - 0.5) * 1.0
         breakdown["compliance_modifier"] = compliance_modifier
 
-        # 8. 自然恢复期的好心情（健康在恢复）
-        recovery_bonus = 0.0
-        if cumulative_health:
-            consecutive_good = cumulative_health.get("consecutive_good_days", 0)
-            if consecutive_good >= 3 and health_score > cumulative_health.get("initial_score", 75) * 0.8:
-                recovery_bonus = 0.5
-                breakdown["recovery_feeling_good"] = True
-        breakdown["recovery_bonus"] = recovery_bonus
-
         # 汇总计算
         total_score = (
             BASE_SCORE
@@ -2455,7 +2314,6 @@ class Scorer:
             + reasonability_bonus
             + habit_bonus
             + compliance_modifier
-            + recovery_bonus
         )
 
         # 限制在1-10范围内
