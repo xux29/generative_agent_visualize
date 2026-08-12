@@ -75,85 +75,6 @@ def index():
     return render_template("health_index.html", scenarios=scenarios)
 
 
-@app.route("/mechanism")
-def mechanism_panel():
-    """轻量机制调整面板：看当前参数改动与 model/proposal 状态。"""
-    return render_template("mechanism_panel.html")
-
-
-_KEY_PARAM_PATHS = [
-    "simulation.subject.self_discipline",
-    "simulation.subject.initial_health",
-    "simulation.health.warning_line",
-    "simulation.relapse.base_prob",
-    "simulation.mood.base_score",
-    "simulation.satisfaction.base_score",
-    "simulation.habit.streak_good_delta",
-    "management.tidal.trust_level.good_delta",
-]
-
-
-@app.route("/api/mechanism/overview")
-def api_mechanism_overview():
-    """当前机制状态：关键参数、相对基线 diff、models/proposals、可用场景。"""
-    from modules.mechanism_config import (
-        DEFAULT_ACTIVE_PATH,
-        load_defaults,
-        load_mechanism_config,
-        reset_mechanism_config,
-    )
-    from modules.mechanism_config.schema import flatten_diff, get_by_dotted
-    from modules.health_mechanisms.model_version import ModelVersionStore
-
-    reset_mechanism_config()
-    try:
-        active = load_mechanism_config(str(DEFAULT_ACTIVE_PATH))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-    baseline = load_defaults()
-    diff = flatten_diff(baseline, active)
-
-    key_params = []
-    for path in _KEY_PARAM_PATHS:
-        cur = get_by_dotted(active, path, default=None)
-        base = get_by_dotted(baseline, path, default=None)
-        key_params.append({
-            "path": path,
-            "current": cur,
-            "baseline": base,
-            "changed": cur != base,
-        })
-
-    store = ModelVersionStore()
-    models = store.list_models()
-    # newest first
-    models = list(reversed(models))
-    proposals = store.list_proposals()
-
-    scenarios = []
-    result_path = Path("results/health")
-    if result_path.exists():
-        scenarios = sorted(
-            d.name for d in result_path.iterdir() if d.is_dir()
-        )
-
-    return jsonify({
-        "active_meta": active.get("meta", {}),
-        "active_model_id": store.get_active_model_id(),
-        "key_params": key_params,
-        "diff_changes": {k: diff[k] for k in list(diff.keys())[:80]},
-        "change_count": len(diff),
-        "models": models[:20],
-        "proposals": proposals[-20:],
-        "scenarios": scenarios,
-        "editable_roots": [
-            "modules/health_mechanisms",
-            "data/mechanism/prompts",
-        ],
-    })
-
-
 @app.route("/api/scenarios")
 def api_scenarios():
     """API: List all scenarios"""
@@ -295,7 +216,6 @@ def create_templates():
 </head>
 <body>
     <h1>健康管理模拟系统</h1>
-    <p><a href="/mechanism">机制调整面板</a> — 查看当前参数改动与 model/proposal 状态</p>
     <div class="scenario-list">
         {% for s in scenarios %}
         <div class="scenario-card">
@@ -478,12 +398,7 @@ def create_templates():
 
 def main():
     parser = argparse.ArgumentParser(description="Health Simulation Visualization")
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=5002,
-        help="Server port (default 5002; replay_health uses 5001)",
-    )
+    parser.add_argument("--port", type=int, default=5001, help="Server port")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Server host")
 
     args = parser.parse_args()
@@ -492,7 +407,6 @@ def main():
     create_templates()
 
     print(f"Starting health visualization server at http://{args.host}:{args.port}")
-    print(f"Mechanism panel: http://{args.host}:{args.port}/mechanism")
     app.run(host=args.host, port=args.port, debug=True)
 
 
