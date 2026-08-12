@@ -1,9 +1,5 @@
-"""generative_agents.strategy
+"""Management / intervention strategy mechanisms."""
 
-Compatibility re-export. Mechanism code lives in ``modules.health_mechanisms``.
-"""
-
-from modules.health_mechanisms.management.strategy import *  # noqa: F401,F403
 from modules.health_mechanisms.management.strategy import (
     Strategy,
     StrategyManager,

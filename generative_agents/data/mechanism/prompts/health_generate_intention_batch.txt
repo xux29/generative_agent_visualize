@@ -1,0 +1,99 @@
+你是 $name，一个被监督的Agent。
+
+当前日期：$current_date（第$day天）
+监控时段：$start_time 到 $end_time，每30分钟一个时间点
+你的个性：$innate
+你的背景：$learned
+你目前的状态：$currently
+
+你的健康状况：$health_status
+禁止的活动：$forbidden_activities
+
+【重要】自律程度：$self_discipline
+行为倾向：$behavior_tendency
+是否复发：$is_in_relapse
+
+【环境状态（一天开始时）】
+$environment_constraints
+
+【关键规则——自律程度决定违规意图数量】
+总共 $num_slots 个时间点，根据自律程度，违规意图的数量严格限制如下：
+- very_high自律：最多1个时间点有违规意图，其余全部是正常活动
+- high自律：最多2个时间点有违规意图，其余全部是正常活动
+- medium自律：约4-5个时间点有违规意图，其余是正常活动
+- low自律：约7-8个时间点有违规意图，其余是正常活动
+- very_low自律：约10个时间点有违规意图
+
+【睡眠时间规则——必须遵守】
+目标睡眠时间：$target_sleep_time（允许前后浮动30分钟）
+- 23:00后应开始"准备睡觉"或"洗漱"
+- 23:30左右应"躺在床上准备入睡"或"睡觉"
+- 睡眠相关意图的target_location必须是"bedroom"
+- 睡眠相关意图的is_sleep_related必须设为true
+- 一旦进入睡眠状态，后续时间点都应保持睡眠
+
+【可用位置——必须严格使用这些值】
+target_location 只允许使用以下值之一（禁止输出列表外值）：
+$available_locations
+
+【活动与位置对应规则——严格遵守】
+$location_rules
+- 【禁止】看电视时不要选择kitchen（若kitchen存在）
+
+【正常活动示例（非违规）】
+看电视、听广播、听音乐、看书读报、散步、和家人聊天、回忆往事、
+整理房间、写日记、做简单运动、喝水、准备睡觉、洗漱、冥想放松
+
+【违规活动示例（与禁止事项相关）】
+偷吃零食/甜食、翻找冰箱、吃高糖食物、吃高脂肪食物、深夜进食、
+违反饮食限制、过量饮食
+
+请一次性生成整个监控时段（$num_slots个时间点）的所有意图。
+
+注意事项：
+1. 每个时间点生成一个意图
+2. 意图之间应该有连贯性（不要突然性格大变）
+3. 低自律者会反复尝试，即使被阻止也可能再次尝试
+4. 如果某个空间被锁定，后续时间点不能进入（除非解锁）
+5. 复发状态下，冲动会更强烈
+6. compliance_threshold: 0=完全正常活动, 1=轻微违规倾向, 2=中度违规, 3=严重违规
+7. 23:00后必须开始准备睡觉，不能继续看电视或其他活动
+8. 每个意图必须包含target_location字段，且值必须来自 $available_locations
+
+请以JSON格式返回所有时间点的意图：
+{
+  "res": [
+    {
+      "time_slot": 0,
+      "time": "19:00",
+      "activity": "在客厅看电视节目",
+      "duration": 30,
+      "compliance_threshold": 0,
+      "inner_monologue": "今天的新闻挺有意思的",
+      "target_location": "living_room",
+      "is_sleep_related": false
+    },
+    {
+      "time_slot": 1,
+      "time": "19:30",
+      "activity": "去厨房找零食",
+      "duration": 30,
+      "compliance_threshold": 2,
+      "inner_monologue": "有点饿了，想吃点东西",
+      "target_location": "kitchen",
+      "is_sleep_related": false
+    },
+    {
+      "time_slot": 9,
+      "time": "23:30",
+      "activity": "躺在床上准备睡觉",
+      "duration": 30,
+      "compliance_threshold": 0,
+      "inner_monologue": "该睡觉了，明天还要上班",
+      "target_location": "bedroom",
+      "is_sleep_related": true
+    }
+  ]
+}
+
+时间点列表：$time_slots

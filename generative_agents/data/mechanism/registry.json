@@ -1,0 +1,123 @@
+{
+  "meta": {
+    "description": "Health mechanism registry: maps logical mechanisms to code + config paths",
+    "editable_code_roots": [
+      "modules/health_mechanisms/",
+      "data/mechanism/prompts/"
+    ],
+    "config_root": "data/mechanism/"
+  },
+  "mechanisms": {
+    "health_score": {
+      "title": "健康分（非线性主路径）",
+      "implementation": "modules.health_mechanisms.scoring.nonlinear.NonlinearHealthScorer",
+      "config_path": "simulation.health",
+      "prompts": [],
+      "editable_by_ai": true
+    },
+    "health_score_linear": {
+      "title": "健康分（线性兼容）",
+      "implementation": "modules.health_mechanisms.scoring.linear.CumulativeHealthScorer",
+      "config_path": "simulation.health",
+      "prompts": [],
+      "editable_by_ai": true
+    },
+    "mood": {
+      "title": "情绪分",
+      "implementation": "modules.health_mechanisms.scoring.nonlinear.Scorer.calculate_mood_score_with_discipline",
+      "config_path": "simulation.mood",
+      "prompts": [],
+      "editable_by_ai": true
+    },
+    "satisfaction": {
+      "title": "满意度",
+      "implementation": "modules.health_mechanisms.scoring.nonlinear.Scorer.calculate_satisfaction_score",
+      "config_path": "simulation.satisfaction",
+      "prompts": [],
+      "editable_by_ai": true
+    },
+    "relapse": {
+      "title": "复发（被管者行为）",
+      "implementation": "modules.health_mechanisms.agent_mixin.HealthAgentMixin.calculate_relapse_probability",
+      "config_path": "simulation.relapse",
+      "prompts": [],
+      "editable_by_ai": true
+    },
+    "habit": {
+      "title": "习惯 streak / 倾向",
+      "implementation": "modules.health_mechanisms.agent_mixin.HealthAgentMixin.update_habit_streak",
+      "config_path": "simulation.habit",
+      "prompts": [],
+      "editable_by_ai": true
+    },
+    "compliance": {
+      "title": "劝说服从 / 抵抗",
+      "implementation": "modules.health_mechanisms.agent_mixin.HealthAgentMixin.react_to_persuasion",
+      "config_path": "simulation.compliance",
+      "prompts": [
+        "health_generate_persuasion",
+        "health_react_persuasion"
+      ],
+      "editable_by_ai": true
+    },
+    "intention": {
+      "title": "意图生成",
+      "implementation": "modules.health_mechanisms.agent_mixin.HealthAgentMixin.generate_intention",
+      "config_path": "simulation.subject",
+      "prompts": [
+        "health_generate_intention",
+        "health_generate_intention_batch",
+        "health_generate_turnaround"
+      ],
+      "editable_by_ai": true
+    },
+    "intervention_execute": {
+      "title": "干预执行",
+      "implementation": "modules.health_mechanisms.agent_mixin.HealthAgentMixin.execute_intervention",
+      "config_path": "management.intervention",
+      "prompts": [],
+      "editable_by_ai": true
+    },
+    "management": {
+      "title": "长期管理策略",
+      "implementation": "modules.health_mechanisms.management.strategy.LongTermStrategyManager",
+      "config_path": "management",
+      "prompts": [
+        "health_evaluate_strategy",
+        "health_evaluate_strategy_batch",
+        "health_daily_reflection"
+      ],
+      "editable_by_ai": true
+    },
+    "asymmetric_game": {
+      "title": "信息不对称博弈",
+      "implementation": "modules.health_mechanisms.asymmetric_game.AsymmetricGameEngine",
+      "config_path": null,
+      "note": "参数尚未外置到 mechanism JSON",
+      "prompts": [],
+      "editable_by_ai": true
+    },
+    "scenario": {
+      "title": "场景语义配置",
+      "implementation": "modules.health_mechanisms.scenario.ScenarioConfig",
+      "config_path": null,
+      "data_file": "data/semantic_mapping.json",
+      "prompts": [],
+      "editable_by_ai": true
+    },
+    "behavior_scores": {
+      "title": "行为分项表",
+      "implementation": "modules.health_mechanisms.scoring.nonlinear.Scorer",
+      "config_path": "simulation.behavior_scores",
+      "prompts": [],
+      "editable_by_ai": true
+    },
+    "composite": {
+      "title": "综合评估",
+      "implementation": "modules.health_mechanisms.scoring.nonlinear.Scorer.calculate_composite_score",
+      "config_path": "simulation.composite",
+      "prompts": [],
+      "editable_by_ai": true
+    }
+  }
+}

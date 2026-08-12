@@ -32,18 +32,22 @@ from dotenv import load_dotenv, find_dotenv
 
 from modules.game import create_game, get_game
 from modules import utils
-from modules.scenario_config import get_scenario_config
-from modules.scorer_nonlinear import (
+from modules.health_mechanisms.scenario import get_scenario_config
+from modules.health_mechanisms.scoring.nonlinear import (
     NonlinearHealthScorer,
     Scorer,
     SelfDisciplineLevel,
     InitialHealthScore,
 )
 # 线性 CumulativeHealthScorer 仅用于兼容旧 checkpoint；主路径为非线性
-from modules.scorer import CumulativeHealthScorer
-from modules.strategy import Strategy, StrategyManager, LongTermStrategyManager
-from modules.asymmetric_game import AsymmetricGameEngine, ManagerGoalType
-from modules.intention import Intention
+from modules.health_mechanisms.scoring.linear import CumulativeHealthScorer
+from modules.health_mechanisms.management.strategy import (
+    Strategy,
+    StrategyManager,
+    LongTermStrategyManager,
+)
+from modules.health_mechanisms.asymmetric_game import AsymmetricGameEngine, ManagerGoalType
+from modules.health_mechanisms.intention import Intention
 from modules.mechanism_config import (
     MECHANISM_DATA_DIR,
     get_mechanism_config,
@@ -408,7 +412,7 @@ class HealthSimulation:
                 target_personality = "rebellious"
 
             # 重新初始化博弈引擎以使用正确的性格
-            from modules.asymmetric_game import AsymmetricGameEngine
+            from modules.health_mechanisms.asymmetric_game import AsymmetricGameEngine
             self.asymmetric_game = AsymmetricGameEngine(
                 scenario=self.asymmetric_game.manager_mind.scenario,
                 target_personality=target_personality
@@ -1683,7 +1687,19 @@ class HealthSimulation:
                 # Locking done; manager leaves the area
                 self._move_agent_to_location(self.manager_agent, "living_room")
 
+            # 对齐计时器到当前时间槽，写入回放 checkpoint（batch 原先漏写）
+            try:
+                hh, mm = [int(x) for x in time_str.split(":")[:2]]
+                timer.set_time_of_day(hh, mm, 0)
+            except Exception:
+                pass
             self.step_counter += 1
+            self._save_checkpoint(
+                timer.get_date(),
+                intention,
+                strategy,
+                env_state=dict(env_state),
+            )
 
             if sleep_stop:
                 intentions = intentions[: i + 1]
@@ -1719,6 +1735,18 @@ class HealthSimulation:
                 "location": "bedroom",
                 "status": "arrived"
             })
+            try:
+                fhh, fmm = [int(x) for x in forced_time_str.split(":")[:2]]
+                timer.set_time_of_day(fhh, fmm, 0)
+            except Exception:
+                pass
+            self._move_agent_to_location(self.target_agent, "bedroom")
+            self._save_checkpoint(
+                timer.get_date(),
+                forced_intention,
+                Strategy.observe("强制睡觉"),
+                env_state=dict(env_state),
+            )
 
         # Step 4: 计算分数和更新状态（使用累积健康分系统）
         target_data = self._collect_target_data(day_log)

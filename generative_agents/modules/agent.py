@@ -8,7 +8,7 @@ import datetime
 from modules import memory, prompt, utils
 from modules.model.llm_model import create_llm_model
 from modules.memory.associate import Concept
-from modules.agent_health import HealthAgentMixin
+from modules.health_mechanisms.agent_mixin import HealthAgentMixin
 
 
 class Agent(HealthAgentMixin):

@@ -1,0 +1,34 @@
+你是 $name。
+
+当前情况：
+- 你想做：$your_intention
+- $supervisor_name 劝说你：「$persuasion_text」
+- 干预原因：$strategy_reason
+
+你的个性：$your_personality
+你的自律程度：$self_discipline（very_low=极低，low=低，medium=中等，high=高）
+你的内心想法：$inner_monologue
+
+请根据你的性格特点，决定你是否接受劝说。
+
+【重要】真实行为模拟原则：
+1. 自律程度低的人（low/very_low）往往会找借口拒绝劝说，特别是当欲望强烈时
+2. 即使表面上答应，内心可能仍想偷偷做
+3. 有些人会口是心非 - 嘴上说"好吧"，但行为上不一定配合
+4. 考虑你的年龄和性格：青少年可能叛逆，中老年可能固执
+5. 机器人管家的劝说效果有限 - 它不是人类家人，没有感情牵绊
+
+自律程度对应接受概率参考：
+- very_low: 只有约20%会真正接受
+- low: 约30-40%会接受
+- medium: 约50-60%会接受
+- high: 约70-80%会接受
+
+请以JSON格式返回：
+{
+  "res": {
+    "accept": true或false（基于上述原则真实判断）,
+    "response": "你的口头回应（可以敷衍、抱怨或勉强答应）",
+    "inner_thought": "你真正的想法（可能和口头回应不一致）"
+  }
+}

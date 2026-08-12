@@ -1,9 +1,5 @@
-"""generative_agents.scorer_nonlinear
+"""Health scoring mechanisms (nonlinear primary + linear compatibility)."""
 
-Compatibility re-export. Mechanism code lives in ``modules.health_mechanisms``.
-"""
-
-from modules.health_mechanisms.scoring.nonlinear import *  # noqa: F401,F403
 from modules.health_mechanisms.scoring.nonlinear import (
     NonlinearHealthScorer,
     Scorer,
@@ -11,6 +7,7 @@ from modules.health_mechanisms.scoring.nonlinear import (
     HealthZone,
     InitialHealthScore,
 )
+from modules.health_mechanisms.scoring.linear import CumulativeHealthScorer
 
 __all__ = [
     "NonlinearHealthScorer",
@@ -18,4 +15,5 @@ __all__ = [
     "SelfDisciplineLevel",
     "HealthZone",
     "InitialHealthScore",
+    "CumulativeHealthScorer",
 ]
