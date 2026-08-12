@@ -46,7 +46,7 @@ generative_agents/
 │   └── sandboxes/                 # 沙箱工作区（本地，不入库）
 ├── tools/mechanism_cli.py         # 参数版本 CLI
 ├── tools/model_cli.py             # Model / AI 编辑 CLI
-└── visualize_health.py            # 结果可视化 + /mechanism 面板
+└── visualize_health.py / replay_health.py   # 原有结果可视化（未改机制面板）
 ```
 
 旧路径（如 `modules/agent_health.py`）保留 **re-export**，兼容原有 import。
@@ -102,19 +102,15 @@ python tools/model_cli.py rollback --model M_prev
 
 参数-only 版本仍可用：`python tools/mechanism_cli.py ...`
 
-### Phase 4 — 轻量机制面板
+### Phase 4 — 可视化说明
 
-不重做整套前端，挂在现有 `visualize_health.py`：
+原计划做过轻量「机制调整面板」，后已**删除**，继续使用既有：
 
-```bash
-python visualize_health.py --port 5002
-# 打开 http://127.0.0.1:5002/mechanism
-```
+- `replay_health.py`（地图回放）
+- `visualize_health.py`（结果图表）
 
-面板展示：当前关键参数 vs 基线、diff、model/proposal 状态、已有仿真健康分曲线。  
-**不做在线编辑**；改参仍用 CLI / JSON。
-
-地图回放仍用：`python replay_health.py`（端口 5001）。
+观察参数与版本请用 CLI / 直接读 `data/mechanism/`；架构对比见  
+[健康机制改动前后对比.md](./健康机制改动前后对比.md)。
 
 ---
 
@@ -151,4 +147,4 @@ python visualize_health.py --port 5002
 
 ## 6. 与老师沟通时的一句话
 
-> 健康机制代码统一在 `health_mechanisms/`，参数继续用 JSON；AI 可以改机制文件和参数两层，JSON 只是配置接口；改动先进 proposal/model，经校验与批准后才进 live，并支持回滚。轻量面板用于观察参数与结果，不替代 CLI 编辑。
+> 健康机制代码统一在 `health_mechanisms/`，参数继续用 JSON；AI 可以改机制文件和参数两层，JSON 只是配置接口；改动先进 proposal/model，经校验与批准后才进 live，并支持回滚。
