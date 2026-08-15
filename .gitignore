@@ -172,3 +172,6 @@ generative_agents/data/mechanism/sandboxes/
 generative_agents/data/mechanism/models/
 generative_agents/data/mechanism/proposals/
 generative_agents/data/mechanism/versions/v_*.json
+
+# Local regenerations of param impact (canonical copy lives in docs/mechanism/param_impact/)
+generative_agents/data/mechanism/param_impact/
