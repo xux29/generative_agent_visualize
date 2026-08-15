@@ -142,7 +142,11 @@ python tools/mechanism_cli.py diff <id_a> <id_b>
 ```
 
 完整默认值见：`generative_agents/data/mechanism/defaults/v0_baseline.json`。  
-参数含义表见：`docs/健康干预仿真_可调参数全景.md`。
+参数盘点（偏目录）：`docs/健康干预仿真_可调参数全景.md`。  
+**每个参数升高/降低对模拟的影响（逐项实测）**：[`mechanism/机制参数升降影响手册.md`](./mechanism/机制参数升降影响手册.md)  
+复现：`cd generative_agents && python3 tools/param_impact_sweep.py --out-dir ../docs/mechanism/param_impact`（机制层对照，无 LLM）。
+
+> 手册按参数列出「升高时 / 降低时模拟怎么变」；原始 JSON 在 [`mechanism/param_impact/`](./mechanism/param_impact/)。专家语义层后续再映射到底层字段。
 
 ### 常用字段示例
 
@@ -222,5 +226,11 @@ from modules.scorer_nonlinear import NonlinearHealthScorer, Scorer
 2. `save --name ...` 存档。
 3. 用 `--mechanism-version <id>` 或 `activate` 后跑仿真，看曲线。
 4. 不合适则 `rollback v0_baseline`，再开新版本继续试。
+
+若在可视化界面与 AI **对话改参**，请使用项目 Skill  
+`.cursor/skills/edit-mechanism-config/SKILL.md`（只允许改 `data/mechanism` 参数，禁止改机制代码）。  
+若需求是增删改公式/状态机，改用  
+`.cursor/skills/edit-health-mechanisms/SKILL.md`。  
+总览见：`docs/健康机制双层架构与AI编辑.md` §4。
 
 开发设计说明见：`docs/MECHANISM_CONFIG_DEV_PLAN.md`。
