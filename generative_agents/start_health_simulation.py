@@ -48,6 +48,16 @@ from modules.health_mechanisms.management.strategy import (
 )
 from modules.health_mechanisms.asymmetric_game import AsymmetricGameEngine, ManagerGoalType
 from modules.health_mechanisms.intention import Intention
+from modules.health_mechanisms.rules import (
+    adjust_intervention_for_day,
+    check_env_blocked,
+    count_unblocked_violations,
+    generate_turnaround,
+    is_sleep_activity,
+    is_violation_intention,
+    normalize_sleep_intention,
+    turnaround_template,
+)
 from modules.mechanism_config import (
     MECHANISM_DATA_DIR,
     get_mechanism_config,
@@ -1112,15 +1122,10 @@ class HealthSimulation:
         day_log["agents"][self.target_name] = target_data
 
         # 【累积健康分系统】计算每日变化
-        # 检测是否有违规行为（按场景限定）
-        snacking_violations = target_data.get("snacking_count", 0)
-        phone_violation = 1 if target_data.get("phone_duration_before_sleep", 0) > 60 else 0
-        is_phone_scenario = "phone" in self.scenario_name or "手机" in self.scenario_name
-        if is_phone_scenario:
-            unblocked_violation_count = phone_violation
-        else:
-            unblocked_violation_count = snacking_violations
-        had_violation = unblocked_violation_count > 0
+        # 检测是否有违规行为（按场景限定；机制：rules.violation.count_unblocked_violations）
+        unblocked_violation_count, had_violation = count_unblocked_violations(
+            self.scenario_name, target_data
+        )
         day_log["unblocked_violation_count"] = unblocked_violation_count
         day_log["had_violation"] = had_violation
         intervention_count = len(day_log.get("interventions", []))
@@ -2318,88 +2323,22 @@ class HealthSimulation:
         return None
 
     def _is_sleep_activity(self, intention) -> bool:
-        """判断意图是否睡眠相关"""
-        if not intention:
-            return False
-        if getattr(intention, "is_sleep_related", False):
-            return True
-        activity = getattr(intention, "activity", "") or ""
-        # 延迟睡眠的表达不等于睡觉
-        delay_keywords = ["晚睡", "晚点睡", "再睡", "先不睡", "不想睡"]
-        if any(kw in activity for kw in delay_keywords):
-            return False
-        sleep_keywords = ["睡觉", "去睡", "上床", "躺床", "准备睡觉", "洗漱", "晚安", "sleep", "bed"]
-        return any(kw in activity for kw in sleep_keywords)
+        """判断意图是否睡眠相关（机制：health_mechanisms.rules.violation）"""
+        return is_sleep_activity(intention)
 
     def _is_violation_intention(self, intention, target_location=None) -> bool:
-        """判断意图是否违规（基于内容/地点关键词，避免误判非违规活动）"""
-        if not intention:
-            return False
-        activity = getattr(intention, "activity", "") or ""
-        activity_lower = activity.lower()
-        if not target_location:
-            target_location = getattr(intention, "target_location", None) or self._infer_target_location(activity)
-
-        forbidden_foods = [f.lower() for f in getattr(self.scenario, "forbidden_foods", []) if f]
-        forbidden_activities = [a.lower() for a in getattr(self.scenario, "forbidden_activities", []) if a]
-
-        if any(word in activity_lower for word in forbidden_foods):
-            return True
-        if any(word in activity_lower for word in forbidden_activities):
-            return True
-
-        food_keywords = ["吃", "零食", "夜宵", "宵夜", "外卖", "甜食", "薯片", "蛋糕", "汉堡", "油炸", "可乐", "翻找", "偷吃"]
-        if target_location == "kitchen" and any(word in activity for word in food_keywords):
-            return True
-
-        phone_keywords = ["手机", "刷手机", "玩手机", "短视频", "游戏", "社交媒体", "上网"]
-        if target_location == "phone_area" or "phone" in self.scenario_name or "手机" in self.scenario_name:
-            if any(word in activity for word in phone_keywords):
-                return True
-
-        # 兜底：如果 compliance_threshold 很高且地点是高风险区域，也视为违规
-        if getattr(intention, "compliance_threshold", 0) >= 2 and target_location in {"kitchen", "phone_area"}:
-            return True
-
-        return False
+        """判断意图是否违规（机制：health_mechanisms.rules.violation）"""
+        return is_violation_intention(
+            intention,
+            self.scenario,
+            self.scenario_name,
+            target_location=target_location,
+            infer_location=self._infer_target_location,
+        )
 
     def _normalize_sleep_intention(self, intention, timer):
-        """纠正“晚睡一会儿”等不合理意图"""
-        if not intention:
-            return intention
-        activity = getattr(intention, "activity", "") or ""
-        delay_keywords = ["晚睡", "晚点睡", "再睡", "先不睡", "不想睡"]
-        if not any(kw in activity for kw in delay_keywords):
-            return intention
-
-        # 获取目标睡觉时间
-        target_sleep_time = "23:30"
-        if hasattr(self.scenario, "target_profile"):
-            target_sleep_time = self.scenario.target_profile.get("sleep_schedule", {}).get("target_sleep_time", target_sleep_time)
-        sleep_hour, sleep_minute = 23, 30
-        try:
-            sleep_hour, sleep_minute = [int(x) for x in target_sleep_time.split(":")]
-        except Exception:
-            pass
-
-        now = timer.get_date()
-        current_minutes = now.hour * 60 + now.minute
-        sleep_minutes = sleep_hour * 60 + sleep_minute
-
-        # 未到睡觉时间，改为放松
-        if current_minutes < sleep_minutes:
-            intention.activity = "看电视放松"
-            intention.inner_monologue = f"{intention.inner_monologue}（晚点再睡，先放松一下）"
-            intention.target_location = "living_room"
-            intention.is_sleep_related = False
-            return intention
-
-        # 已到睡觉时间，改为睡觉
-        intention.activity = "睡觉"
-        intention.inner_monologue = f"{intention.inner_monologue}（该睡觉了）"
-        intention.target_location = "bedroom"
-        intention.is_sleep_related = True
-        return intention
+        """纠正「晚睡一会儿」等不合理意图（机制：health_mechanisms.rules.violation）"""
+        return normalize_sleep_intention(intention, timer, self.scenario)
 
     def _get_bed_address(self):
         """优先获取卧室中的床地址"""
@@ -2452,22 +2391,8 @@ class HealthSimulation:
             return "kitchen"
         return None
     def _adjust_intervention_for_day(self, strategy, level2_used: bool, level3_used: bool):
-        """确保当天 L3/L4 不重复，允许 L1 劝说"""
-        if not strategy:
-            return strategy
-        # L4 执行后，当天不再需要 L3/L4
-        if level3_used and strategy.level >= 2:
-            strategy.level = 1
-            strategy.action = "persuade"
-            strategy.reason = f"{strategy.reason}（当天已执行过L4，降级为劝说）"
-            return strategy
-        # L3 不重复
-        if level2_used and strategy.level == 2:
-            strategy.level = 1
-            strategy.action = "persuade"
-            strategy.reason = f"{strategy.reason}（当天已执行过L3，降级为劝说）"
-            return strategy
-        return strategy
+        """确保当天 L3/L4 不重复（机制：health_mechanisms.rules.turnaround）"""
+        return adjust_intervention_for_day(strategy, level2_used, level3_used)
 
     def _normalize_strategy_action(self, strategy, intention=None):
         """确保策略动作与等级一致，保留原始动作"""
@@ -2496,117 +2421,31 @@ class HealthSimulation:
         return strategy
 
     def _check_env_blocked(self, target_location: str, env_state: dict) -> tuple:
-        """检查目标位置是否被环境状态阻止
-
-        Args:
-            target_location: 目标语义位置
-            env_state: 当前环境状态字典
-
-        Returns:
-            tuple: (is_blocked, block_reason, blocked_at_location)
-        """
-        if not target_location:
-            return False, None, None
-
-        if target_location == "kitchen" and env_state.get("kitchen_locked", False):
-            return True, "厨房门被锁了", "kitchen_door"
-
-        if target_location == "kitchen" and env_state.get("food_removed", False):
-            return True, "厨房里没有可吃的东西", "kitchen"
-
-        if target_location == "phone_area" and env_state.get("phone_removed", False):
-            return True, "手机已被没收", "phone_area"
-
-        return False, None, None
+        """检查目标位置是否被环境状态阻止（机制：health_mechanisms.rules.env_block）"""
+        return check_env_blocked(target_location, env_state)
 
     def _generate_turnaround(self, intention, target_location: str, block_reason: str, env_state: dict,
                              blocked_location: str = None) -> dict:
-        """生成折返独白和替代活动
-
-        Args:
-            intention: 原始意图
-            target_location: 被阻止的目标位置
-            block_reason: 阻止原因
-            env_state: 当前环境状态
-            blocked_location: 被阻止的具体位置（如"kitchen_door"）
-
-        Returns:
-            dict: 包含 turnaround_monologue, redirect_activity, redirect_location, emotional_reaction
-        """
-        # 获取环境约束描述
-        constraints = []
-        if env_state.get("kitchen_locked"):
-            constraints.append("厨房已被锁定")
-        if env_state.get("food_removed"):
-            constraints.append("厨房食物已被移除")
-        if env_state.get("phone_removed"):
-            constraints.append("手机已被没收")
-        env_constraints_str = "；".join(constraints) if constraints else "无"
-
-        # 获取位置描述
-        location_desc_map = {
-            "kitchen": "厨房",
-            "kitchen_door": "厨房门口",
-            "snacks_area": "零食柜",
-            "phone_area": "手机放置处",
-            "bedroom": "卧室",
-            "living_room": "客厅"
-        }
-        location_key = blocked_location or target_location
-        target_location_desc = location_desc_map.get(location_key, location_key)
-
-        try:
-            output = self.target_agent.completion(
-                "health_generate_turnaround",
-                original_activity=intention.activity,
-                target_location_desc=target_location_desc,
-                block_reason=block_reason,
-                environment_constraints=env_constraints_str,
-                self_discipline=getattr(self.target_agent, 'self_discipline', 'medium')
-            )
-
-            if isinstance(output, dict):
-                # 如果返回的是包含 res 的字典
-                if "res" in output:
-                    return output["res"]
-                return output
-            else:
-                # Fallback：使用模板
-                return self._turnaround_template(location_key, block_reason)
-
-        except Exception as e:
-            self.logger.warning(f"折返生成失败: {e}，使用模板")
-            return self._turnaround_template(location_key, block_reason)
+        """生成折返独白和替代活动（机制：health_mechanisms.rules.turnaround）"""
+        return generate_turnaround(
+            intention,
+            target_location,
+            block_reason,
+            env_state,
+            blocked_location=blocked_location,
+            manager_name=getattr(self, "manager_name", "管理者"),
+            self_discipline=getattr(self.target_agent, "self_discipline", "medium"),
+            completion_fn=self.target_agent.completion,
+            logger=self.logger,
+        )
 
     def _turnaround_template(self, target_location: str, block_reason: str) -> dict:
-        """折返模板（当LLM调用失败时使用）"""
-        templates = {
-            "kitchen_door": {
-                "turnaround_monologue": f"走到厨房门口发现{block_reason}，看来暂时进不去了。只能去客厅待会儿。",
-                "redirect_activity": "去客厅看电视",
-                "redirect_location": "living_room",
-                "emotional_reaction": "resigned"
-            },
-            "kitchen": {
-                "turnaround_monologue": f"到厨房想找点吃的，结果{block_reason}。估计是{self.manager_name}把食物拿走了，那就在厨房找找别的。",
-                "redirect_activity": "在厨房找其他食物",
-                "redirect_location": "kitchen",
-                "emotional_reaction": "frustrated"
-            },
-            "phone_area": {
-                "turnaround_monologue": f"想玩会儿手机，找了半天发现{block_reason}。肯定是{self.manager_name}把手机收走了，那就休息吧。",
-                "redirect_activity": "躺下休息",
-                "redirect_location": "bedroom",
-                "emotional_reaction": "resigned"
-            }
-        }
-
-        return templates.get(target_location, {
-            "turnaround_monologue": f"想做的事被阻止了：{block_reason}。算了，去客厅待着吧。",
-            "redirect_activity": "去客厅",
-            "redirect_location": "living_room",
-            "emotional_reaction": "resigned"
-        })
+        """折返模板（机制：health_mechanisms.rules.turnaround）"""
+        return turnaround_template(
+            target_location,
+            block_reason,
+            manager_name=getattr(self, "manager_name", "管理者"),
+        )
 
     def _add_minutes_to_time(self, time_str: str, minutes: int) -> str:
         """给时间字符串添加分钟数

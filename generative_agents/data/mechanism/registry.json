@@ -66,7 +66,30 @@
       "config_path": "simulation.subject",
       "prompts": [
         "health_generate_intention",
-        "health_generate_intention_batch",
+        "health_generate_intention_batch"
+      ],
+      "editable_by_ai": true
+    },
+    "violation": {
+      "title": "违规判定 / 睡眠意图归一 / 日终未阻止计数",
+      "implementation": "modules.health_mechanisms.rules.violation",
+      "config_path": null,
+      "note": "关键词与阈值仍硬编码；可由 AI 改 rules/violation.py",
+      "prompts": [],
+      "editable_by_ai": true
+    },
+    "env_block": {
+      "title": "环境阻止（锁厨/移食/收手机）",
+      "implementation": "modules.health_mechanisms.rules.env_block",
+      "config_path": null,
+      "prompts": [],
+      "editable_by_ai": true
+    },
+    "turnaround": {
+      "title": "折返独白与当日干预降级",
+      "implementation": "modules.health_mechanisms.rules.turnaround",
+      "config_path": null,
+      "prompts": [
         "health_generate_turnaround"
       ],
       "editable_by_ai": true
