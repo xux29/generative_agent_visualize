@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
+
+import requests
 
 from modules.health_mechanisms.ai_edit import AIEditAPI
 from modules.health_mechanisms.model_version import (
@@ -32,8 +34,18 @@ from viz_backend.services.editor_llm import (
     chat_completions,
     config_status,
     load_editor_llm_config,
+    stream_chat_completions,
 )
 from viz_backend.services.editor_skills import build_system_prompt
+from modules.mechanism_config.ui_param_guide import (
+    UI_PARAM_GUIDE,
+    enrich_param_specs,
+    format_guide_for_system_prompt,
+    get_ui_param_guide,
+    list_ui_param_guides,
+    summarize_probe_impact,
+)
+from viz_backend.services.probe_runner import probe_ui_param_delta
 
 # Plumbing the visualization editor must not rewrite (self-escalation).
 FROZEN_RELPATHS = {
@@ -71,7 +83,7 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "set_ui_param",
-            "description": "改 proposal 内一个界面可调参数（22 项白名单，见 docs/mechanism/界面可调参数.md）。改参优先用此工具。",
+            "description": "改 proposal 内一个界面可调参数（22 项 UI 键）。改前不确定含义/影响时先 explain_ui_param 或 preview_ui_param。禁止直接改非 UI 映射的 JSON。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -90,11 +102,49 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_ui_params",
-            "description": "列出界面可调 22 项参数及当前 proposal/live 取值。",
+            "description": "列出 22 项界面参数：当前值、中文含义、JSON 映射摘要、调高/调低影响。",
             "parameters": {
                 "type": "object",
                 "properties": {"proposal_id": {"type": "string"}},
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "explain_ui_param",
+            "description": "查询单个 UI 键的完整说明：专家看到的标签、公式、底层 JSON 映射、与关联参数关系。改参前必查。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ui_key": {"type": "string", "description": "如 baseRelapseProb"},
+                },
+                "required": ["ui_key"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "preview_ui_param",
+            "description": "预览把某 UI 键调到新值后，机制探针 Tab KPI 如何变化（不写 proposal）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ui_key": {"type": "string"},
+                    "value": {"type": "number"},
+                    "proposal_id": {"type": "string", "description": "可选，基于草稿配置预览"},
+                },
+                "required": ["ui_key", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_param_guides",
+            "description": "返回全部 22 项 UI 参数语义与映射目录（静态参考）。",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -258,7 +308,16 @@ class EditorToolRuntime:
         updated = write_ui_param(cfg, ui_key, float(value))
         self.api.edit_config(proposal_id, config=updated)
         after = read_ui_param(updated, ui_key)
-        return {"ok": True, "ui_key": ui_key, "before": before, "after": after}
+        preview = probe_ui_param_delta(updated, ui_key, after)
+        return {
+            "ok": True,
+            "ui_key": ui_key,
+            "label": get_ui_param_guide(ui_key).get("label"),
+            "before": before,
+            "after": after,
+            "impact_summary": summarize_probe_impact(preview),
+            "guide_hint": get_ui_param_guide(ui_key).get("meaning"),
+        }
 
     def tool_list_ui_params(self, proposal_id: Optional[str] = None) -> Dict[str, Any]:
         if proposal_id:
@@ -269,7 +328,48 @@ class EditorToolRuntime:
             from modules.mechanism_config import load_mechanism_config
 
             cfg = load_mechanism_config()
-        return {"params": list_ui_param_specs(), "values": snapshot_ui_values(cfg)}
+        return {
+            "params": enrich_param_specs(cfg),
+            "section_formulas": {
+                "health": "健康分演算",
+                "relapse": "复发概率",
+                "satisfaction": "满意度",
+                "management": "管理机制",
+            },
+            "note": "专家 UI 显示 label；AI 必须用 ui_key 改参，勿直接改 subject/潮汐等内置 JSON。",
+        }
+
+    def tool_explain_ui_param(self, ui_key: str) -> Dict[str, Any]:
+        try:
+            return get_ui_param_guide(ui_key.strip())
+        except KeyError:
+            return {"error": f"未知 UI 键: {ui_key}；仅允许 22 项界面参数"}
+
+    def tool_preview_ui_param(
+        self,
+        ui_key: str,
+        value: float,
+        proposal_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ui_key = ui_key.strip()
+        if proposal_id:
+            cfg_path = self.store.proposal_dir(proposal_id) / "config.json"
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        else:
+            from modules.mechanism_config import load_mechanism_config
+
+            cfg = load_mechanism_config()
+        probe = probe_ui_param_delta(cfg, ui_key, float(value))
+        return {
+            "preview": summarize_probe_impact(probe),
+            "guide": get_ui_param_guide(ui_key),
+            "proposed_value": float(value),
+            "current_value": read_ui_param(cfg, ui_key),
+        }
+
+    def tool_list_param_guides(self) -> Dict[str, Any]:
+        return {"guides": list_ui_param_guides(), "count": len(UI_PARAM_GUIDE)}
 
     def tool_list_editable_files(self) -> Dict[str, Any]:
         roots = resolve_editable_roots()
@@ -376,8 +476,52 @@ class EditorSessionStore:
 _SESSIONS = EditorSessionStore()
 
 
-def chat_turn(user_text: str, session_id: Optional[str] = None) -> Dict[str, Any]:
-    """Run one user turn with tool loop. Returns assistant text + tool traces."""
+def _parse_tool_call(call: Dict[str, Any]) -> tuple[str, Dict[str, Any], Any]:
+    fn = call.get("function") or {}
+    name = fn.get("name") or ""
+    raw_args = fn.get("arguments") or "{}"
+    try:
+        args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+    except json.JSONDecodeError:
+        return name, {}, {"error": f"工具参数不是合法 JSON: {str(raw_args)[:200]}"}
+    if not isinstance(args, dict):
+        return name, {}, {"error": "工具参数必须是 JSON 对象"}
+    return name, args, None
+
+
+def _llm_assistant_message(cfg: Dict[str, Any], messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    data = chat_completions(cfg, messages, TOOLS)
+    choice = (data.get("choices") or [{}])[0]
+    return assistant_message_from_choice(choice)
+
+
+def _stream_llm_assistant_message(
+    cfg: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+) -> Iterator[Dict[str, Any]]:
+    """Yield delta/reasoning events, then message_complete with full assistant msg."""
+    assistant_msg: Optional[Dict[str, Any]] = None
+    try:
+        for event in stream_chat_completions(cfg, messages, TOOLS):
+            if event["type"] == "message_complete":
+                assistant_msg = event["message"]
+            else:
+                yield event
+    except MechanismConfigError:
+        assistant_msg = _llm_assistant_message(cfg, messages)
+        content = assistant_msg.get("content") or ""
+        if content:
+            yield {"type": "content_delta", "content": content}
+    if assistant_msg is None:
+        raise MechanismConfigError("流式响应未返回完整 assistant 消息")
+    yield {"type": "message_complete", "message": assistant_msg}
+
+
+def chat_turn_events(
+    user_text: str,
+    session_id: Optional[str] = None,
+) -> Iterator[Dict[str, Any]]:
+    """SSE-friendly event stream for one user turn (content deltas + tool traces)."""
     sid = session_id or uuid.uuid4().hex[:12]
     cfg = load_editor_llm_config()
     messages = _SESSIONS.get(sid)
@@ -386,31 +530,40 @@ def chat_turn(user_text: str, session_id: Optional[str] = None) -> Dict[str, Any
     traces: List[Dict[str, Any]] = []
     final_text = ""
 
+    yield {"type": "session", "session_id": sid, "model": cfg.get("model")}
+
     try:
         for _ in range(cfg["max_tool_rounds"]):
-            data = chat_completions(cfg, messages, TOOLS)
-            choice = (data.get("choices") or [{}])[0]
-            assistant_msg = assistant_message_from_choice(choice)
+            assistant_msg: Optional[Dict[str, Any]] = None
+            for event in _stream_llm_assistant_message(cfg, messages):
+                if event["type"] == "message_complete":
+                    assistant_msg = event["message"]
+                elif event["type"] == "content_delta":
+                    yield {"type": "delta", "content": event["content"]}
+                elif event["type"] == "reasoning_delta":
+                    yield {"type": "reasoning", "content": event["content"]}
+
+            if assistant_msg is None:
+                raise MechanismConfigError("未收到模型回复")
+
             messages.append(assistant_msg)
             tool_calls = assistant_msg.get("tool_calls") or []
             if not tool_calls:
                 final_text = assistant_msg.get("content") or ""
                 break
+
+            yield {"type": "tools_start", "tools": [c.get("function", {}).get("name", "") for c in tool_calls]}
             for call in tool_calls:
-                fn = call.get("function") or {}
-                name = fn.get("name") or ""
-                raw_args = fn.get("arguments") or "{}"
-                try:
-                    args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
-                except json.JSONDecodeError:
+                name, args, parse_err = _parse_tool_call(call)
+                if parse_err is not None:
+                    result = parse_err
                     args = {}
-                    result: Any = {"error": f"工具参数不是合法 JSON: {str(raw_args)[:200]}"}
+                    yield {"type": "tool_start", "tool": name or "?", "args": {}}
+                    yield {"type": "tool_end", "tool": name or "?", "result": result}
                 else:
-                    if not isinstance(args, dict):
-                        args = {}
-                        result = {"error": "工具参数必须是 JSON 对象"}
-                    else:
-                        result = runtime.run(name, args)
+                    yield {"type": "tool_start", "tool": name, "args": _safe_args(name, args)}
+                    result = runtime.run(name, args)
+                    yield {"type": "tool_end", "tool": name, "result": result}
                 traces.append({"tool": name, "args": _safe_args(name, args), "result": result})
                 messages.append(
                     {
@@ -419,25 +572,53 @@ def chat_turn(user_text: str, session_id: Optional[str] = None) -> Dict[str, Any
                         "content": json.dumps(result, ensure_ascii=False, default=str)[:20000],
                     }
                 )
+            yield {"type": "tools_done"}
         else:
             final_text = "达到最大工具轮次，请把需求拆小再试。"
+
+        yield {
+            "type": "done",
+            "session_id": sid,
+            "reply": final_text,
+            "traces": traces,
+            "model": cfg.get("model"),
+            "error": False,
+        }
     except MechanismConfigError as e:
         if messages and messages[-1].get("role") == "user":
             messages.pop()
-        return {
+        yield {
+            "type": "done",
             "session_id": sid,
             "reply": str(e),
             "traces": traces,
             "model": cfg.get("model"),
             "error": True,
         }
+    except requests.RequestException as e:
+        if messages and messages[-1].get("role") == "user":
+            messages.pop()
+        yield {
+            "type": "done",
+            "session_id": sid,
+            "reply": f"编辑模型网络错误: {e}",
+            "traces": traces,
+            "model": cfg.get("model"),
+            "error": True,
+        }
 
-    return {
-        "session_id": sid,
-        "reply": final_text,
-        "traces": traces,
-        "model": cfg.get("model"),
-        "error": False,
+
+def chat_turn(user_text: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+    """Non-streaming fallback — aggregates chat_turn_events into one JSON response."""
+    result: Dict[str, Any] = {}
+    for event in chat_turn_events(user_text, session_id=session_id):
+        if event.get("type") == "done":
+            result = event
+    return result or {
+        "session_id": session_id or "",
+        "reply": "无响应",
+        "traces": [],
+        "error": True,
     }
 
 

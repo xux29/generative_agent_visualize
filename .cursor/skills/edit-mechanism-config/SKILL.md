@@ -45,7 +45,7 @@ description: >-
 |----------|------|
 | 概率/权重/阈值偏大偏小，且落在 22 项内 | **本 skill：`set_ui_param`** |
 | 要改 22 项以外的行为，或改公式结构 | 切换到 `edit-health-mechanisms` 或拒绝 |
-| 不确定 | 先 `list_ui_params`；键不在表中则不可仅改 JSON |
+| 不确定 | 先 `explain_ui_param` / `list_ui_params`；键不在表中则不可仅改 JSON |
 
 ## 推荐流程（优先 proposal，勿直接污染 live）
 

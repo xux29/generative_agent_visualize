@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import random
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from modules.health_mechanisms.agent_mixin import HealthAgentMixin
@@ -17,6 +18,13 @@ from modules.mechanism_config.ui_tunable import (
 )
 
 from viz_backend.services.config_loader import load_baseline_config
+
+_CFG_LOCK = threading.Lock()
+
+
+def _apply_cfg(cfg: dict) -> None:
+    with _CFG_LOCK:
+        set_mechanism_config(cfg)
 
 
 def _fixed_day_events(days: int, seed: int) -> List[Tuple[bool, int, bool, int]]:
@@ -37,7 +45,7 @@ def _fixed_day_events(days: int, seed: int) -> List[Tuple[bool, int, bool, int]]
 
 
 def _run_health_sim(cfg: dict, days: int = 30, seed: int = 7) -> Dict[str, Any]:
-    set_mechanism_config(cfg)
+    _apply_cfg(cfg)
     disc = cfg["simulation"]["subject"].get("self_discipline", "medium")
     init = float(cfg["simulation"]["subject"].get("initial_health", 75))
     scorer = NonlinearHealthScorer(
@@ -91,7 +99,7 @@ class _RelapseStub(HealthAgentMixin):
 
 
 def relapse_factor_breakdown(cfg: dict, days_relaxed: int = 9) -> Dict[str, Any]:
-    set_mechanism_config(cfg)
+    _apply_cfg(cfg)
     stub = _RelapseStub(cfg)
     from modules.mechanism_config import get_path
 
@@ -182,7 +190,7 @@ def health_factor_tab(cfg: dict, baseline_cfg: Optional[dict] = None) -> Dict[st
 
 
 def satisfaction_factor_tab(cfg: dict) -> Dict[str, Any]:
-    set_mechanism_config(cfg)
+    _apply_cfg(cfg)
     actions = [
         {"level": 2, "reasonability": "unnecessary"},
         {"level": 1, "reasonability": "reasonable"},
@@ -229,7 +237,7 @@ def management_tab(cfg: dict) -> Dict[str, Any]:
     ui_vals = snapshot_ui_values(cfg)
     from modules.mechanism_config import get_path
 
-    set_mechanism_config(cfg)
+    _apply_cfg(cfg)
     health_safe = float(get_path("management.over_intervention.health_safe_threshold", 6))
     emotion_warn = float(get_path("management.over_intervention.emotion_warning_threshold", 3.0))
     early_base = float(get_path("management.manager_learning.early_intervention_base", 50.0))

@@ -24,9 +24,12 @@ def list_tabs():
 @bp.route("/params")
 def list_params():
     proposal_id = request.args.get("proposal_id")
-    cfg = resolve_config(proposal_id or None)
-    values = {spec["key"]: read_ui_param(cfg, spec["key"]) for spec in list_ui_param_specs()}
-    return jsonify({"params": list_ui_param_specs(), "values": values, "proposal_id": proposal_id})
+    try:
+        cfg = resolve_config(proposal_id or None)
+        values = {spec["key"]: read_ui_param(cfg, spec["key"]) for spec in list_ui_param_specs()}
+        return jsonify({"params": list_ui_param_specs(), "values": values, "proposal_id": proposal_id})
+    except MechanismConfigError as e:
+        return jsonify({"error": str(e)}), 400
 
 
 @bp.route("/tab/<section>")

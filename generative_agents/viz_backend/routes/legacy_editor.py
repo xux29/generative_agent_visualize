@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from flask import jsonify, render_template, request
+from flask import jsonify, request
 
 from modules.health_mechanisms.ai_edit import AIEditAPI
 from modules.mechanism_config import list_ui_param_specs, load_mechanism_config, read_ui_param, write_ui_param
@@ -11,16 +11,14 @@ from viz_backend.services.config_loader import load_proposal_config
 from viz_backend.services.editor_agent import (
     approve_model,
     chat_turn,
+    chat_turn_events,
     config_status,
     list_editor_state,
 )
+from viz_backend.sse import sse_response
 
 
 def register_legacy_editor_routes(app) -> None:
-    @app.route("/editor")
-    def editor_page():
-        return render_template("health_editor.html")
-
     @app.route("/api/editor/status")
     def editor_status():
         return jsonify(config_status())
@@ -73,6 +71,14 @@ def register_legacy_editor_routes(app) -> None:
         if not text:
             return jsonify({"error": "empty message", "reply": "请输入要改的机制或参数。"}), 400
         return jsonify(chat_turn(text, session_id=body.get("session_id")))
+
+    @app.route("/api/editor/chat/stream", methods=["POST"])
+    def editor_chat_stream():
+        body = request.get_json(silent=True) or {}
+        text = (body.get("message") or "").strip()
+        if not text:
+            return jsonify({"error": "empty message", "reply": "请输入要改的机制或参数。"}), 400
+        return sse_response(chat_turn_events(text, session_id=body.get("session_id")))
 
     @app.route("/api/editor/approve", methods=["POST"])
     def editor_approve():

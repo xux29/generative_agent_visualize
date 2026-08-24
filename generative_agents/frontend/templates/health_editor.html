@@ -11,18 +11,26 @@
         header p { margin: 0; color: #666; font-size: 13px; }
         a { color: #2196F3; text-decoration: none; }
         .layout { display: flex; min-height: calc(100vh - 72px); }
-        .chat { flex: 1; display: flex; flex-direction: column; padding: 16px 20px; min-width: 280px; }
-        .tunable { width: 300px; background: #fff; border-left: 1px solid #e0e0e0; padding: 12px 14px; overflow: auto; font-size: 12px; }
+        .chat { flex: 1; display: flex; flex-direction: column; padding: 16px 20px; min-width: 260px; }
+        .tunable { width: 320px; background: #fff; border-left: 1px solid #e0e0e0; padding: 12px 14px; overflow: auto; font-size: 12px; }
         .msgs { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
         .bubble { max-width: 760px; padding: 12px 14px; background: #fff; border-radius: 8px; white-space: pre-wrap; line-height: 1.5; }
         .bubble.user { background: #e3f2fd; align-self: flex-end; }
+        .bubble.assistant { background: #fff; border: 1px solid #e8e8e8; }
+        .bubble.assistant.streaming::after { content: '▍'; animation: blink 1s step-end infinite; color: #2196F3; }
+        @keyframes blink { 50% { opacity: 0; } }
+        .bubble.tool { background: #f3e5f5; color: #4a148c; font-size: 12px; align-self: flex-start; max-width: 520px; }
+        .bubble.reasoning { background: #fafafa; color: #888; font-size: 11px; font-style: italic; border: 1px dashed #ddd; }
         .bubble.sys { background: #fff8e1; color: #6d5c00; }
         .composer { display: flex; gap: 8px; margin-top: 12px; }
         textarea { flex: 1; min-height: 72px; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font: inherit; }
         button { background: #2196F3; color: #fff; border: 0; border-radius: 6px; padding: 8px 12px; cursor: pointer; font-size: 12px; }
         button:disabled { opacity: 0.5; cursor: default; }
         button.danger { background: #4CAF50; }
+        button.warn { background: #FF9800; }
         button.secondary { background: #607D8B; }
+        button.tab-btn { background: #eee; color: #333; margin: 2px 2px 2px 0; padding: 4px 8px; font-size: 11px; }
+        button.tab-btn.active { background: #2196F3; color: #fff; }
         .side { width: 280px; background: #fff; border-left: 1px solid #e0e0e0; padding: 16px; overflow: auto; font-size: 13px; }
         .side h2, .tunable h2 { font-size: 14px; margin: 14px 0 8px; }
         .side h2:first-child, .tunable h2:first-child { margin-top: 0; }
@@ -37,12 +45,16 @@
         .param-row input[type=range] { width: 100%; }
         .param-row .val { color: #666; font-size: 11px; }
         .section-title { font-size: 11px; color: #888; text-transform: uppercase; margin: 12px 0 6px; border-top: 1px solid #eee; padding-top: 8px; }
+        .probe-box { background: #f9f9f9; border: 1px solid #eee; border-radius: 6px; padding: 8px; margin-top: 8px; font-size: 11px; }
+        .probe-kpi { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+        .probe-kpi span { background: #fff; border: 1px solid #ddd; padding: 2px 6px; border-radius: 4px; }
+        .factor { padding: 3px 0; border-bottom: 1px dotted #eee; }
     </style>
 </head>
 <body>
     <header>
         <h1>机制编辑</h1>
-        <p><a href="/">← 返回场景列表</a> · 仅 <strong>22 项</strong>界面可调参数；其余机制内置。改参走提案 → 批准落地。</p>
+        <p><a href="/">← 返回场景列表</a> · 仅 <strong>22 项</strong>界面可调参数；改参走提案 → 批准落地。</p>
     </header>
     <div class="layout">
         <div class="chat">
@@ -59,15 +71,20 @@
                 <button class="secondary" id="new-proposal" style="margin-top:6px;width:100%">新建调参提案</button>
             </div>
             <div id="sliders"></div>
+            <h2>机制探针</h2>
+            <div id="tab-buttons"></div>
+            <div class="probe-box" id="probe-panel">选择 Tab 或拖动滑杆查看机制层反馈</div>
         </aside>
         <aside class="side">
-            <h2>模型</h2>
+            <h2>编辑模型</h2>
             <div id="llm-status">加载中…</div>
             <h2>提案</h2>
             <div id="proposals">暂无</div>
             <h2>待批准</h2>
             <label class="chk"><input type="checkbox" id="config-only"> 只落地 JSON</label>
             <div id="models">暂无</div>
+            <h2>当前生效</h2>
+            <div id="active-model">—</div>
             <h2>工具 trace</h2>
             <pre id="traces">[]</pre>
         </aside>
@@ -78,11 +95,25 @@
         const sendBtn = document.getElementById('send');
         const tracesEl = document.getElementById('traces');
         const slidersEl = document.getElementById('sliders');
+        const probePanel = document.getElementById('probe-panel');
+        const tabButtons = document.getElementById('tab-buttons');
         let sessionId = localStorage.getItem('editor_session_id') || '';
         let activeProposalId = localStorage.getItem('editor_proposal_id') || '';
-        const API = '/api/viz/editor';
+        let API = '/api/viz/editor';
+        const MECH = '/api/viz/mechanism';
+        let activeTab = 'health';
 
         const SECTION_ZH = { health: '健康分', relapse: '复发', satisfaction: '满意度', management: '管理' };
+
+        async function resolveApiPrefix() {
+            for (const p of ['/api/viz/editor', '/api/editor']) {
+                try {
+                    const r = await fetch(p + '/status');
+                    if (r.ok) return p;
+                } catch (_) {}
+            }
+            return '/api/viz/editor';
+        }
 
         function addBubble(text, cls) {
             const div = document.createElement('div');
@@ -90,15 +121,102 @@
             div.textContent = text;
             msgs.appendChild(div);
             msgs.scrollTop = msgs.scrollHeight;
+            return div;
         }
 
-        addBubble('左侧对话可改机制代码（白名单内）。右侧滑杆仅 22 项界面参数，需先「新建调参提案」。', 'sys');
+        function appendToolHint(text) {
+            return addBubble(text, 'tool');
+        }
+
+        async function consumeSseStream(response, handlers) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const chunks = buffer.split('\n\n');
+                buffer = chunks.pop() || '';
+                for (const chunk of chunks) {
+                    const line = chunk.trim();
+                    if (!line.startsWith('data:')) continue;
+                    const jsonText = line.replace(/^data:\s*/, '');
+                    if (!jsonText) continue;
+                    let event;
+                    try { event = JSON.parse(jsonText); } catch (_) { continue; }
+                    await handlers(event);
+                }
+            }
+        }
+
+        async function resolveStreamUrl() {
+            const base = await resolveApiPrefix();
+            return base + '/chat/stream';
+        }
+
+        function renderProbe(tab) {
+            if (!tab) { probePanel.textContent = '无探针数据'; return; }
+            let html = '<strong>' + (tab.title || activeTab) + '</strong>';
+            if (tab.gauge) {
+                html += '<div class="probe-kpi">';
+                Object.entries(tab.gauge).forEach(([k, v]) => {
+                    html += '<span>' + k + ': ' + v + '</span>';
+                });
+                html += '</div>';
+            }
+            if (tab.kpis) {
+                html += '<div class="probe-kpi">';
+                Object.entries(tab.kpis).forEach(([k, v]) => {
+                    html += '<span>' + k + ': ' + v + '</span>';
+                });
+                html += '</div>';
+            }
+            (tab.factors || []).slice(0, 8).forEach(f => {
+                const label = f.label || f.ui_key || f.key || '';
+                const val = f.current_impact ?? f.value ?? f.current_ui ?? '';
+                html += '<div class="factor">' + label + ': ' + val + '</div>';
+            });
+            probePanel.innerHTML = html;
+        }
+
+        async function loadTab(section) {
+            activeTab = section;
+            tabButtons.querySelectorAll('.tab-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.section === section);
+            });
+            const q = activeProposalId ? ('?proposal_id=' + encodeURIComponent(activeProposalId)) : '';
+            try {
+                const res = await fetch(MECH + '/tab/' + section + q);
+                const data = await res.json();
+                if (res.ok) renderProbe(data);
+                else probePanel.textContent = data.error || '加载失败';
+            } catch (e) {
+                probePanel.textContent = '探针请求失败: ' + e;
+            }
+        }
+
+        async function initTabs() {
+            const res = await fetch(MECH + '/tabs');
+            const data = await res.json();
+            tabButtons.innerHTML = '';
+            (data.tabs || []).forEach(t => {
+                const btn = document.createElement('button');
+                btn.className = 'tab-btn' + (t.id === activeTab ? ' active' : '');
+                btn.dataset.section = t.id;
+                btn.textContent = 'Tab' + t.tab;
+                btn.onclick = () => loadTab(t.id);
+                tabButtons.appendChild(btn);
+            });
+            loadTab(activeTab);
+        }
 
         function setActiveProposal(id) {
             activeProposalId = id || '';
             localStorage.setItem('editor_proposal_id', activeProposalId);
             document.getElementById('active-proposal').textContent = activeProposalId || '无草稿';
             loadSliders();
+            loadTab(activeTab);
         }
 
         async function ensureProposal() {
@@ -120,6 +238,10 @@
             const q = activeProposalId ? ('?proposal_id=' + encodeURIComponent(activeProposalId)) : '';
             const res = await fetch(API + '/params' + q);
             const data = await res.json();
+            if (!res.ok) {
+                addBubble('参数加载失败: ' + (data.error || res.status), 'sys');
+                return;
+            }
             const bySection = {};
             (data.params || []).forEach(p => {
                 if (!bySection[p.section]) bySection[p.section] = [];
@@ -138,7 +260,7 @@
                     row.innerHTML =
                         '<label>' + p.label + '</label>' +
                         '<input type="range" min="' + p.min + '" max="' + p.max + '" step="any" ' +
-                        'data-key="' + p.key + '" value="' + v + '">' +
+                        'data-key="' + p.key + '" data-section="' + p.section + '" value="' + v + '">' +
                         '<div class="val"><span class="v">' + Number(v).toFixed(3) + '</span> (' + p.min + '–' + p.max + ')</div>';
                     const range = row.querySelector('input');
                     const span = row.querySelector('.v');
@@ -153,6 +275,10 @@
                         });
                         const td = await tune.json();
                         if (!tune.ok) addBubble('滑杆失败: ' + (td.error || tune.status), 'sys');
+                        else if (td.tab) {
+                            renderProbe(td.tab);
+                            if (td.section) loadTab(td.section);
+                        }
                         refreshState();
                     };
                     slidersEl.appendChild(row);
@@ -165,12 +291,13 @@
             const data = await res.json();
             const llm = data.llm || {};
             document.getElementById('llm-status').innerHTML =
-                '<div>模型: <code>' + (llm.model || '-') + '</code></div>' +
+                '<div>provider: <code>' + (llm.provider || '-') + '</code></div>' +
+                '<div>model: <code>' + (llm.model || '-') + '</code></div>' +
                 '<div><span class="pill ' + (llm.configured ? 'ok' : 'bad') + '">' +
-                (llm.configured ? 'Key 已配' : '未配 Key') + '</span></div>';
+                (llm.configured ? 'Key 已配' : '未配 Key — 复制 editor_llm.minimax.example.json → editor_llm.json') + '</span></div>';
 
             const proposals = data.proposals || [];
-            document.getElementById('proposals').innerHTML = proposals.length ? proposals.map(p =>
+            document.getElementById('proposals').innerHTML = proposals.length ? proposals.slice(0, 6).map(p =>
                 '<div class="item"><code>' + p.id + '</code><br>' + (p.name || '') +
                 ' · ' + (p.status || '') +
                 (p.id === activeProposalId ? ' <strong>← 当前</strong>' : '') + '</div>'
@@ -185,6 +312,15 @@
             mbox.querySelectorAll('[data-approve]').forEach(btn => {
                 btn.onclick = () => approve(btn.getAttribute('data-approve'));
             });
+
+            const activeId = data.active_model_id || '—';
+            document.getElementById('active-model').innerHTML =
+                '<code>' + activeId + '</code>' +
+                (activeId && activeId !== '—'
+                    ? '<br><button class="warn" id="rollback-btn" style="margin-top:6px">回滚到上一版</button>'
+                    : '');
+            const rb = document.getElementById('rollback-btn');
+            if (rb) rb.onclick = () => rollback(activeId);
         }
 
         async function approve(modelId) {
@@ -201,6 +337,24 @@
             addBubble(res.ok ? ('已落地: ' + modelId) : ('失败: ' + (data.error || res.status)), 'sys');
             refreshState();
             loadSliders();
+            loadTab(activeTab);
+        }
+
+        async function rollback(modelId) {
+            if (!confirm('确认回滚 ' + modelId + '？')) return;
+            const res = await fetch(API + '/rollback', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    model_id: modelId,
+                    config_only: document.getElementById('config-only').checked
+                })
+            });
+            const data = await res.json();
+            addBubble(res.ok ? ('已回滚: ' + modelId) : ('失败: ' + (data.error || res.status)), 'sys');
+            refreshState();
+            loadSliders();
+            loadTab(activeTab);
         }
 
         async function send() {
@@ -209,23 +363,76 @@
             input.value = '';
             addBubble(text, 'user');
             sendBtn.disabled = true;
+
+            let assistantBubble = null;
+            let reasoningBubble = null;
+            const traces = [];
+
             try {
-                const res = await fetch(API + '/chat', {
+                const streamUrl = await resolveStreamUrl();
+                const res = await fetch(streamUrl, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ message: text, session_id: sessionId || null })
                 });
-                const data = await res.json();
-                if (data.session_id) {
-                    sessionId = data.session_id;
-                    localStorage.setItem('editor_session_id', sessionId);
+
+                if (!res.ok || !res.body) {
+                    const err = await res.json().catch(() => ({}));
+                    addBubble('请求失败: ' + (err.reply || err.error || res.status), 'sys');
+                    return;
                 }
-                addBubble(data.reply || data.error || '无回复', 'assistant');
-                tracesEl.textContent = JSON.stringify(data.traces || [], null, 2);
-                await refreshState();
-                loadSliders();
+
+                await consumeSseStream(res, async (event) => {
+                    if (event.type === 'session') {
+                        if (event.session_id) {
+                            sessionId = event.session_id;
+                            localStorage.setItem('editor_session_id', sessionId);
+                        }
+                    } else if (event.type === 'delta') {
+                        if (!assistantBubble) {
+                            assistantBubble = addBubble('', 'assistant streaming');
+                        }
+                        assistantBubble.textContent += event.content || '';
+                        msgs.scrollTop = msgs.scrollHeight;
+                    } else if (event.type === 'reasoning') {
+                        if (!reasoningBubble) {
+                            reasoningBubble = addBubble('', 'reasoning');
+                            reasoningBubble.textContent = '💭 ';
+                        }
+                        reasoningBubble.textContent += event.content || '';
+                        msgs.scrollTop = msgs.scrollHeight;
+                    } else if (event.type === 'tool_start') {
+                        if (assistantBubble) {
+                            assistantBubble.classList.remove('streaming');
+                            assistantBubble = null;
+                        }
+                        appendToolHint('🔧 调用 ' + (event.tool || 'tool') + ' …');
+                    } else if (event.type === 'tool_end') {
+                        traces.push({ tool: event.tool, result: event.result });
+                        tracesEl.textContent = JSON.stringify(traces, null, 2);
+                    } else if (event.type === 'tools_done') {
+                        reasoningBubble = null;
+                    } else if (event.type === 'done') {
+                        if (assistantBubble) assistantBubble.classList.remove('streaming');
+                        if (event.session_id) {
+                            sessionId = event.session_id;
+                            localStorage.setItem('editor_session_id', sessionId);
+                        }
+                        if (event.traces && event.traces.length) {
+                            tracesEl.textContent = JSON.stringify(event.traces, null, 2);
+                        }
+                        if (event.error && (!assistantBubble || !assistantBubble.textContent.trim())) {
+                            addBubble(event.reply || '出错', 'sys');
+                        } else if (event.error && assistantBubble) {
+                            assistantBubble.classList.add('sys');
+                        }
+                        await refreshState();
+                        loadSliders();
+                        loadTab(activeTab);
+                    }
+                });
             } catch (e) {
-                addBubble('请求失败: ' + e, 'sys');
+                addBubble('流式请求失败: ' + e, 'sys');
             } finally {
                 sendBtn.disabled = false;
             }
@@ -245,11 +452,16 @@
             }
         };
 
-        sendBtn.onclick = send;
-        input.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); });
-        document.getElementById('active-proposal').textContent = activeProposalId || '无草稿';
-        refreshState();
-        loadSliders();
+        (async function boot() {
+            API = await resolveApiPrefix();
+            addBubble('左侧对话可改机制代码（白名单内）。右侧滑杆仅 22 项界面参数，需先「新建调参提案」。', 'sys');
+            document.getElementById('active-proposal').textContent = activeProposalId || '无草稿';
+            sendBtn.onclick = send;
+            input.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); });
+            await refreshState();
+            await initTabs();
+            await loadSliders();
+        })();
     </script>
 </body>
 </html>
