@@ -33,7 +33,10 @@ generative_agents/
 │   ├── registry.py                # 机制注册表 API
 │   ├── model_version.py           # 统一 Model Version
 │   ├── ai_edit.py                 # AI 双编辑 API
-│   └── sandbox.py                 # 校验 / 短仿真沙箱
+│   ├── sandbox.py                 # 校验 / 短仿真沙箱
+│   ├── editor_skills.py           # 加载两份 Skill 为系统提示
+│   ├── editor_agent.py            # 编辑 LLM 工具循环
+│   └── editor_http.py             # /editor 与 /api/editor/*
 ├── modules/mechanism_config/      # 参数加载 / VersionStore（参数层）
 ├── data/mechanism/
 │   ├── active.json                # 当前生效参数
@@ -49,7 +52,7 @@ generative_agents/
 ├── .cursor/skills/                # 对话约束 Skill（改参 / 改机制）
 │   ├── edit-mechanism-config/
 │   └── edit-health-mechanisms/
-└── visualize_health.py / replay_health.py   # 原有结果可视化（未改机制面板）
+└── visualize_health.py / replay_health.py   # 结果可视化 + /editor 机制编辑对话
 ```
 
 旧路径（如 `modules/agent_health.py`）保留 **re-export**，兼容原有 import。
@@ -88,8 +91,9 @@ propose（草稿，不改 live）
 
 - `modules/health_mechanisms/**`
 - `data/mechanism/prompts/**`
+- `data/mechanism/registry.json`
 
-禁止直接改基座（如 `modules/agent.py` 认知核）。
+禁止直接改基座（如 `modules/agent.py` 认知核）。可视化对话见 `python visualize_health.py` → `/editor`。
 
 常用命令（在 `generative_agents/` 下）：
 
@@ -107,10 +111,11 @@ python tools/model_cli.py rollback --model M_prev
 
 ### Phase 4 — 可视化说明
 
-原计划做过轻量「机制调整面板」，后已**删除**，继续使用既有：
+原计划做过轻量「机制调整面板」，后已**删除**，继续使用既有结果可视化。机制/参数改动走对话，而不是参数仪表盘：
 
 - `replay_health.py`（地图回放）
-- `visualize_health.py`（结果图表）
+- `visualize_health.py`（结果图表 + `/editor` AI 对话）
+- 工作流与模型推荐：[docs/mechanism/可视化AI编辑工作流.md](./mechanism/可视化AI编辑工作流.md)
 
 观察参数与版本请用 CLI / 直接读 `data/mechanism/`；架构对比见  
 [健康机制改动前后对比.md](./健康机制改动前后对比.md)。
@@ -119,7 +124,7 @@ python tools/model_cli.py rollback --model M_prev
 
 ## 4. Cursor Agent Skills（对话式改参 / 改机制）
 
-后续在可视化界面与 AI 对话时，由两个**项目级 Skill**约束 AI 的可写范围，避免越权改到斯坦福基座或编排代码。
+后续在可视化界面 `/editor` 与 AI 对话时，由两个**项目级 Skill**约束 AI 的可写范围，避免越权改到斯坦福基座或编排代码。接线与模型推荐见 [mechanism/可视化AI编辑工作流.md](./mechanism/可视化AI编辑工作流.md)。
 
 | Skill | 路径 | 用途 |
 |-------|------|------|

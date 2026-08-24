@@ -33,6 +33,7 @@ from modules.mechanism_config import (
     set_mechanism_config,
 )
 from tools.param_zh_catalog import describe_param
+from modules.mechanism_config.ui_tunable import UI_TUNABLE_JSON_PATHS
 from modules.health_mechanisms.agent_mixin import HealthAgentMixin
 from modules.health_mechanisms.scoring.nonlinear import (
     NonlinearHealthScorer,
@@ -558,6 +559,7 @@ def align_cfg_for_path(cfg: dict, path: str) -> dict:
 def run_sweep(
     days_health: int = 30,
     config_path: Optional[str | Path] = None,
+    ui_only: bool = True,
 ) -> Tuple[List[SweepRow], List[dict], dict]:
     """Sweep ↑/↓ for every leaf in the given mechanism JSON (default: active.json)."""
     del days_health  # reserved; health probe uses its own default
@@ -575,6 +577,9 @@ def run_sweep(
 
     for path, value in leaves:
         if not path.startswith(("simulation.", "management.")):
+            continue
+        if ui_only and path not in UI_TUNABLE_JSON_PATHS:
+            skipped.append({"path": path, "baseline": value, "reason": "非界面22项白名单"})
             continue
         reason = should_skip(path, value)
         if reason:
@@ -1062,6 +1067,11 @@ def main() -> None:
         help="Mechanism JSON to sweep (default: active.json)",
     )
     parser.add_argument(
+        "--all-params",
+        action="store_true",
+        help="扫 active.json 全部叶子（默认仅界面可调 22 项映射路径）",
+    )
+    parser.add_argument(
         "--canvas",
         default=str(
             Path.home()
@@ -1078,7 +1088,9 @@ def main() -> None:
 
     print(f"Running parameter impact sweep on {args.config} …")
     rows, skipped, source_meta = run_sweep(
-        days_health=args.health_days, config_path=args.config
+        days_health=args.health_days,
+        config_path=args.config,
+        ui_only=not args.all_params,
     )
     from datetime import datetime, timezone
 

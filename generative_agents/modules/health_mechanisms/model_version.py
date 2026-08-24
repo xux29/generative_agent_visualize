@@ -42,6 +42,7 @@ _SLUG_RE = re.compile(r"[^a-zA-Z0-9_\-]+")
 DEFAULT_EDITABLE_ROOTS = [
     "modules/health_mechanisms",
     "data/mechanism/prompts",
+    "data/mechanism/registry.json",
 ]
 
 

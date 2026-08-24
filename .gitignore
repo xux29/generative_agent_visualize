@@ -175,3 +175,6 @@ generative_agents/data/mechanism/versions/v_*.json
 
 # Local regenerations of param impact (canonical copy lives in docs/mechanism/param_impact/)
 generative_agents/data/mechanism/param_impact/
+
+# Editor LLM secrets (keep editor_llm.example.json)
+generative_agents/data/mechanism/editor_llm.json

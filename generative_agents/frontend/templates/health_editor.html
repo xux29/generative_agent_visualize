@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>机制编辑</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; color: #222; }
+        header { padding: 16px 20px; background: #fff; border-bottom: 1px solid #e0e0e0; }
+        header h1 { margin: 0 0 6px; font-size: 20px; }
+        header p { margin: 0; color: #666; font-size: 13px; }
+        a { color: #2196F3; text-decoration: none; }
+        .layout { display: flex; min-height: calc(100vh - 72px); }
+        .chat { flex: 1; display: flex; flex-direction: column; padding: 16px 20px; min-width: 280px; }
+        .tunable { width: 300px; background: #fff; border-left: 1px solid #e0e0e0; padding: 12px 14px; overflow: auto; font-size: 12px; }
+        .msgs { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+        .bubble { max-width: 760px; padding: 12px 14px; background: #fff; border-radius: 8px; white-space: pre-wrap; line-height: 1.5; }
+        .bubble.user { background: #e3f2fd; align-self: flex-end; }
+        .bubble.sys { background: #fff8e1; color: #6d5c00; }
+        .composer { display: flex; gap: 8px; margin-top: 12px; }
+        textarea { flex: 1; min-height: 72px; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font: inherit; }
+        button { background: #2196F3; color: #fff; border: 0; border-radius: 6px; padding: 8px 12px; cursor: pointer; font-size: 12px; }
+        button:disabled { opacity: 0.5; cursor: default; }
+        button.danger { background: #4CAF50; }
+        button.secondary { background: #607D8B; }
+        .side { width: 280px; background: #fff; border-left: 1px solid #e0e0e0; padding: 16px; overflow: auto; font-size: 13px; }
+        .side h2, .tunable h2 { font-size: 14px; margin: 14px 0 8px; }
+        .side h2:first-child, .tunable h2:first-child { margin-top: 0; }
+        .pill { display: inline-block; padding: 2px 8px; border-radius: 4px; background: #eee; font-size: 11px; }
+        .pill.ok { background: #e8f5e9; color: #2e7d32; }
+        .pill.bad { background: #ffebee; color: #c62828; }
+        .item { border: 1px solid #eee; padding: 8px; margin-bottom: 8px; border-radius: 6px; }
+        pre { background: #fafafa; padding: 8px; overflow: auto; max-height: 160px; font-size: 11px; }
+        label.chk { display: flex; align-items: center; gap: 6px; margin: 8px 0; }
+        .param-row { margin-bottom: 10px; }
+        .param-row label { display: block; font-weight: 600; margin-bottom: 2px; }
+        .param-row input[type=range] { width: 100%; }
+        .param-row .val { color: #666; font-size: 11px; }
+        .section-title { font-size: 11px; color: #888; text-transform: uppercase; margin: 12px 0 6px; border-top: 1px solid #eee; padding-top: 8px; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>机制编辑</h1>
+        <p><a href="/">← 返回场景列表</a> · 仅 <strong>22 项</strong>界面可调参数；其余机制内置。改参走提案 → 批准落地。</p>
+    </header>
+    <div class="layout">
+        <div class="chat">
+            <div class="msgs" id="msgs"></div>
+            <div class="composer">
+                <textarea id="input" placeholder="改公式/新机制请描述需求；单纯拧旋钮请用右侧滑杆或说「把 baseRelapseProb 调到 0.12」"></textarea>
+                <button id="send">发送</button>
+            </div>
+        </div>
+        <aside class="tunable">
+            <h2>界面可调参数</h2>
+            <div id="proposal-bar">
+                <code id="active-proposal">无草稿</code>
+                <button class="secondary" id="new-proposal" style="margin-top:6px;width:100%">新建调参提案</button>
+            </div>
+            <div id="sliders"></div>
+        </aside>
+        <aside class="side">
+            <h2>模型</h2>
+            <div id="llm-status">加载中…</div>
+            <h2>提案</h2>
+            <div id="proposals">暂无</div>
+            <h2>待批准</h2>
+            <label class="chk"><input type="checkbox" id="config-only"> 只落地 JSON</label>
+            <div id="models">暂无</div>
+            <h2>工具 trace</h2>
+            <pre id="traces">[]</pre>
+        </aside>
+    </div>
+    <script>
+        const msgs = document.getElementById('msgs');
+        const input = document.getElementById('input');
+        const sendBtn = document.getElementById('send');
+        const tracesEl = document.getElementById('traces');
+        const slidersEl = document.getElementById('sliders');
+        let sessionId = localStorage.getItem('editor_session_id') || '';
+        let activeProposalId = localStorage.getItem('editor_proposal_id') || '';
+        const API = '/api/viz/editor';
+
+        const SECTION_ZH = { health: '健康分', relapse: '复发', satisfaction: '满意度', management: '管理' };
+
+        function addBubble(text, cls) {
+            const div = document.createElement('div');
+            div.className = 'bubble ' + cls;
+            div.textContent = text;
+            msgs.appendChild(div);
+            msgs.scrollTop = msgs.scrollHeight;
+        }
+
+        addBubble('左侧对话可改机制代码（白名单内）。右侧滑杆仅 22 项界面参数，需先「新建调参提案」。', 'sys');
+
+        function setActiveProposal(id) {
+            activeProposalId = id || '';
+            localStorage.setItem('editor_proposal_id', activeProposalId);
+            document.getElementById('active-proposal').textContent = activeProposalId || '无草稿';
+            loadSliders();
+        }
+
+        async function ensureProposal() {
+            if (activeProposalId) return activeProposalId;
+            const res = await fetch(API + '/propose', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name: 'ui_sliders', note: '界面滑杆' })
+            });
+            const data = await res.json();
+            if (data.proposal_id) {
+                setActiveProposal(data.proposal_id);
+                await refreshState();
+            }
+            return data.proposal_id;
+        }
+
+        async function loadSliders() {
+            const q = activeProposalId ? ('?proposal_id=' + encodeURIComponent(activeProposalId)) : '';
+            const res = await fetch(API + '/params' + q);
+            const data = await res.json();
+            const bySection = {};
+            (data.params || []).forEach(p => {
+                if (!bySection[p.section]) bySection[p.section] = [];
+                bySection[p.section].push(p);
+            });
+            slidersEl.innerHTML = '';
+            Object.keys(bySection).forEach(sec => {
+                const title = document.createElement('div');
+                title.className = 'section-title';
+                title.textContent = SECTION_ZH[sec] || sec;
+                slidersEl.appendChild(title);
+                bySection[sec].forEach(p => {
+                    const v = (data.values || {})[p.key];
+                    const row = document.createElement('div');
+                    row.className = 'param-row';
+                    row.innerHTML =
+                        '<label>' + p.label + '</label>' +
+                        '<input type="range" min="' + p.min + '" max="' + p.max + '" step="any" ' +
+                        'data-key="' + p.key + '" value="' + v + '">' +
+                        '<div class="val"><span class="v">' + Number(v).toFixed(3) + '</span> (' + p.min + '–' + p.max + ')</div>';
+                    const range = row.querySelector('input');
+                    const span = row.querySelector('.v');
+                    range.oninput = () => { span.textContent = Number(range.value).toFixed(3); };
+                    range.onchange = async () => {
+                        const pid = await ensureProposal();
+                        if (!pid) return;
+                        const tune = await fetch(API + '/tune', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ proposal_id: pid, ui_key: p.key, value: Number(range.value) })
+                        });
+                        const td = await tune.json();
+                        if (!tune.ok) addBubble('滑杆失败: ' + (td.error || tune.status), 'sys');
+                        refreshState();
+                    };
+                    slidersEl.appendChild(row);
+                });
+            });
+        }
+
+        async function refreshState() {
+            const res = await fetch(API + '/state');
+            const data = await res.json();
+            const llm = data.llm || {};
+            document.getElementById('llm-status').innerHTML =
+                '<div>模型: <code>' + (llm.model || '-') + '</code></div>' +
+                '<div><span class="pill ' + (llm.configured ? 'ok' : 'bad') + '">' +
+                (llm.configured ? 'Key 已配' : '未配 Key') + '</span></div>';
+
+            const proposals = data.proposals || [];
+            document.getElementById('proposals').innerHTML = proposals.length ? proposals.map(p =>
+                '<div class="item"><code>' + p.id + '</code><br>' + (p.name || '') +
+                ' · ' + (p.status || '') +
+                (p.id === activeProposalId ? ' <strong>← 当前</strong>' : '') + '</div>'
+            ).join('') : '暂无';
+
+            const pending = (data.models || []).filter(m => m.status === 'proposed' && !m.active);
+            const mbox = document.getElementById('models');
+            mbox.innerHTML = pending.length ? pending.map(m =>
+                '<div class="item"><code>' + m.id + '</code><br>' + (m.name || '') +
+                '<br><button class="danger" data-approve="' + m.id + '">批准落地</button></div>'
+            ).join('') : '暂无';
+            mbox.querySelectorAll('[data-approve]').forEach(btn => {
+                btn.onclick = () => approve(btn.getAttribute('data-approve'));
+            });
+        }
+
+        async function approve(modelId) {
+            if (!confirm('确认落地 ' + modelId + '？')) return;
+            const res = await fetch(API + '/approve', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    model_id: modelId,
+                    config_only: document.getElementById('config-only').checked
+                })
+            });
+            const data = await res.json();
+            addBubble(res.ok ? ('已落地: ' + modelId) : ('失败: ' + (data.error || res.status)), 'sys');
+            refreshState();
+            loadSliders();
+        }
+
+        async function send() {
+            const text = input.value.trim();
+            if (!text) return;
+            input.value = '';
+            addBubble(text, 'user');
+            sendBtn.disabled = true;
+            try {
+                const res = await fetch(API + '/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ message: text, session_id: sessionId || null })
+                });
+                const data = await res.json();
+                if (data.session_id) {
+                    sessionId = data.session_id;
+                    localStorage.setItem('editor_session_id', sessionId);
+                }
+                addBubble(data.reply || data.error || '无回复', 'assistant');
+                tracesEl.textContent = JSON.stringify(data.traces || [], null, 2);
+                await refreshState();
+                loadSliders();
+            } catch (e) {
+                addBubble('请求失败: ' + e, 'sys');
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+
+        document.getElementById('new-proposal').onclick = async () => {
+            const res = await fetch(API + '/propose', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name: 'ui_manual', note: '手动新建' })
+            });
+            const data = await res.json();
+            if (data.proposal_id) {
+                setActiveProposal(data.proposal_id);
+                addBubble('已创建提案: ' + data.proposal_id, 'sys');
+                refreshState();
+            }
+        };
+
+        sendBtn.onclick = send;
+        input.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); });
+        document.getElementById('active-proposal').textContent = activeProposalId || '无草稿';
+        refreshState();
+        loadSliders();
+    </script>
+</body>
+</html>

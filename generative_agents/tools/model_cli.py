@@ -34,6 +34,7 @@ from modules.health_mechanisms.ai_edit import AIEditAPI  # noqa: E402
 from modules.health_mechanisms.model_version import ModelVersionStore  # noqa: E402
 from modules.health_mechanisms.sandbox import run_sim, validate_target  # noqa: E402
 from modules.mechanism_config.schema import MechanismConfigError  # noqa: E402
+from modules.mechanism_config.ui_tunable import assert_ui_tunable_json_path  # noqa: E402
 
 
 def _api() -> AIEditAPI:
@@ -97,6 +98,7 @@ def cmd_list_models(_: argparse.Namespace) -> int:
 
 
 def cmd_edit_config(args: argparse.Namespace) -> int:
+    assert_ui_tunable_json_path(args.path)
     _api().edit_config(
         args.proposal,
         dotted_path=args.path,

@@ -15,8 +15,8 @@ import argparse
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request
 
-# Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from modules.health_mechanisms.editor_http import register_editor_routes
 
 
 app = Flask(
@@ -24,6 +24,7 @@ app = Flask(
     template_folder="frontend/templates",
     static_folder="frontend/static"
 )
+register_editor_routes(app)
 
 
 def load_simulation_data(scenario_name, result_path="results/health"):
@@ -216,6 +217,7 @@ def create_templates():
 </head>
 <body>
     <h1>健康管理模拟系统</h1>
+    <p><a href="/editor">机制编辑对话（AI）</a> · 改参数/机制走提案，批准后才落地</p>
     <div class="scenario-list">
         {% for s in scenarios %}
         <div class="scenario-card">

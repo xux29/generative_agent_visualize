@@ -3,7 +3,8 @@
     "description": "Health mechanism registry: maps logical mechanisms to code + config paths",
     "editable_code_roots": [
       "modules/health_mechanisms/",
-      "data/mechanism/prompts/"
+      "data/mechanism/prompts/",
+      "data/mechanism/registry.json"
     ],
     "config_root": "data/mechanism/"
   },
