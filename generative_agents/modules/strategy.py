@@ -1467,6 +1467,11 @@ class LongTermStrategyManager(StrategyManager):
             compliance_threshold = exit_conditions.get("habit_compliance_rate", 0.6)
             required_good_days = exit_conditions.get("consecutive_good_days", 5)
 
+            # 兜底：调整期超过21天仍未满足条件，强制进入倦怠期
+            max_adjustment_days = exit_conditions.get("max_days", 21)
+            if days_in_phase >= max_adjustment_days:
+                return True
+
             # 检查无干预自觉率
             compliance_rate = self.habit_tracker.no_intervention_compliance_rate
             if (compliance_rate >= compliance_threshold and

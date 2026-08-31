@@ -137,33 +137,33 @@ class NonlinearHealthScorer:
         },
     }
 
-    # 自律程度参数（平衡模式 - 改进版）
+    # 自律程度参数（统一扣分范围，不同等级通过韧性、波动、平台期区分）
     DISCIPLINE_PARAMS = {
         SelfDisciplineLevel.HIGH: {
             # 违规惩罚范围（每次违规的基础扣分）
-            "violation_penalty_range": (0.5, 1.5),      # 每次违规扣0.5-1.5分
+            "violation_penalty_range": (0.5, 1.5),      # 统一扣分范围
             # 累积系数（连续违规的复合影响系数）
             "cumulative_factor": 0.005,  # 极低累积效应
             # 日常波动标准差（生理/心理变异）
-            "noise_sigma": 0.3,         # 波动较小
+            "noise_sigma": 0.15,         # 波动较小
             # 韧性（抗压能力）
-            "resilience": 2.0,          # 强抗压能力
+            "resilience": 2.5,           # 强抗压能力
             # 平台期持续天数（用于潮汐周期）
             "plateau_duration": 14,
             "description": "高自律：波动极小、净恢复为正、抗压强"
         },
         SelfDisciplineLevel.MEDIUM: {
-            "violation_penalty_range": (1.5, 2),      # 每次违规扣1.5-2分
+            "violation_penalty_range": (0.5, 1.5),      # 统一扣分范围
             "cumulative_factor": 0.005,
-            "noise_sigma": 0.4,
+            "noise_sigma": 0.3,
             "resilience": 1.4,
             "plateau_duration": 7,
             "description": "中自律：中等波动、净扣分基本为0"
         },
         SelfDisciplineLevel.LOW: {
-            "violation_penalty_range": (2, 3),    # 每次违规扣2-3分
+            "violation_penalty_range": (0.5, 1.5),      # 统一扣分范围
             "cumulative_factor": 0.005,  # 极低累积效应（每多一天只+0.5%）
-            "noise_sigma": 0.5,
+            "noise_sigma": 0.4,
             "resilience": 1.2,
             "plateau_duration": 3,
             "description": "低自律：波动较大、净扣分为负"
@@ -172,6 +172,8 @@ class NonlinearHealthScorer:
 
     # 警戒线
     WARNING_LINE = 30
+    # 软地板（分数低于20时限制下降）
+    SOFT_FLOOR = 20
 
     def __init__(
         self,
@@ -226,7 +228,7 @@ class NonlinearHealthScorer:
         )
         self.improvement_threshold = get_path(
             "simulation.health.nonlinear.improvement_threshold",
-            default=14,
+            default=10,
         )
         floor_cfg = get_path(
             "simulation.health.nonlinear.floor_protection",
@@ -401,8 +403,8 @@ class NonlinearHealthScorer:
         # 7. 更新当前分数
         new_score = self.current_score + change
 
-        # 限制分数在 [floor_score, 100] 之间，确保不会降到低于下限（如0）
-        new_score = max(self.floor_score, min(100, new_score))
+        # 限制分数在 [max(floor_score, SOFT_FLOOR), 100] 之间，确保不会降到低于软地板20
+        new_score = max(max(self.floor_score, self.SOFT_FLOOR), min(100, new_score))
 
         # 记录
         breakdown["change"] = change
@@ -480,20 +482,8 @@ class NonlinearHealthScorer:
         resilience_mult = 1.0 - resilience_noise
         resilience_mult = max(0.5, min(1.5, resilience_mult))
 
-        # 【底线保护】健康分越低，惩罚逐渐减小（防止雪崩）
-        fp = self.floor_protection
-        if current_score < 30:
-            floor_protection = fp.get("lt_30", 0.25)
-        elif current_score < 40:
-            floor_protection = fp.get("lt_40", 0.40)
-        elif current_score < 50:
-            floor_protection = fp.get("lt_50", 0.60)
-        elif current_score < 60:
-            floor_protection = fp.get("lt_60", 0.80)
-        elif current_score < 70:
-            floor_protection = fp.get("lt_70", 0.90)
-        else:
-            floor_protection = fp.get("else", 1.0)
+        # 【已移除底线保护】低分时惩罚全额执行
+        floor_protection = 1.0
 
         # 6. 综合计算
         total_penalty = (
@@ -596,12 +586,12 @@ class NonlinearHealthScorer:
         注意：当健康分接近或低于警戒线时，禁用加速下滑机制，
         因为底线保护/恢复机制已经足够强
         """
-        # 【底线】当预估分数将低于30时，禁用加速下滑
-        if projected_score < 30:
+        # 【底线】当预估分数将低于20时，禁用加速下滑（更温和处理临界状态）
+        if projected_score < 20:
             return 0
 
         # 基础加速（指数增长，但更温和）
-        base_acceleration = -0.15 * (consecutive_bad_days - 2) ** 1.3
+        base_acceleration = -0.12 * (consecutive_bad_days - 2) ** 1.3
 
         # 区间修正
         zone_sensitivity = self._get_zone_sensitivity(projected_score)
@@ -609,7 +599,7 @@ class NonlinearHealthScorer:
         acceleration = base_acceleration * zone_sensitivity
 
         # 限制加速度最大值
-        acceleration = max(-3.0, min(0, acceleration))
+        acceleration = max(-2.5, min(0, acceleration))
 
         # 缩减加速下滑强度以匹配整体惩罚缩放
         acceleration *= getattr(self, 'penalty_scale', 1.0)
@@ -620,22 +610,18 @@ class NonlinearHealthScorer:
         """添加日常生理/心理波动
 
         模拟真实健康指标的随机变异
-        当分数低于30时，限制负向波动以保护底线
+        当分数低于20时，限制负向波动以保护底线
         """
         noise = random.gauss(0, self.params["noise_sigma"])
 
         # 限制波动幅度（防止噪声主导信号）
-        # 调整为±1.5分，允许更大的日常波动
-        max_noise = 1.5
+        max_noise = 1.2
         noise = max(-max_noise, min(max_noise, noise))
 
-        # 【改进】当分数低于30时，限制负向波动但不完全禁止
-        if self.current_score < 30:
-            # 在紧急区间，主要允许正向噪声，但仍允许小幅负向波动
-            noise = max(-0.5, min(noise, 1.0))  # 允许-0.5到+1.0的波动
-        elif self.current_score < 40:
-            # 在危险区间，允许适度负向噪声
-            noise = max(-1.0, min(noise, 1.2))
+        # 【改进】当分数低于20时，限制负向波动但不完全禁止
+        if self.current_score < 20:
+            # 在低分区，主要允许正向噪声，但仍允许小幅负向波动
+            noise = max(-0.8, min(noise, 0.8))  # 允许-0.8到+0.8的波动
 
         return noise
 

@@ -166,3 +166,6 @@ cython_debug/
 
 # Simulation results
 generative_agents/results/
+docs/实验流程任务书_每日管理情况查看.md
+docs/用户实验方案_健康管理效果评估.md
+docs/健康分计算公式.md

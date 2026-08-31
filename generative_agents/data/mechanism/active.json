@@ -401,6 +401,7 @@
         "trust_earn_bonus": 1.0,
         "exit_conditions": {
           "min_days": 7,
+          "max_days": 21,
           "habit_compliance_rate": 0.6,
           "consecutive_good_days": 5
         }

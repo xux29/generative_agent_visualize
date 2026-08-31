@@ -109,6 +109,26 @@ class HealthAnalyzer:
             print(f"Error loading results: {e}")
             return None
 
+    def load_day_file(self, run_path, day):
+        """从运行目录加载指定天的 day_XX.json 文件。
+
+        Args:
+            run_path: 运行目录路径
+            day: 天数（整数）
+
+        Returns:
+            dict: 当日详细数据，文件不存在时返回空字典
+        """
+        day_file = Path(run_path) / f"day_{day:02d}.json"
+        if not day_file.exists():
+            return {}
+
+        try:
+            with open(day_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
     def _build_weekly_day_maps(self, long_term_mechanism):
         """将周级别统计映射为逐日查找表。"""
         trust_by_day = {}
@@ -274,8 +294,13 @@ class HealthAnalyzer:
 
         return time_dist
 
-    def extract_metrics(self, results):
-        """从结果数据中提取逐日指标。"""
+    def extract_metrics(self, results, run_path=None):
+        """从结果数据中提取逐日指标。
+
+        Args:
+            results: 从 complete_results.json 加载的结果数据
+            run_path: 运行目录路径，用于加载 day_XX.json 补充数据
+        """
         if not results or 'daily_data' not in results:
             return None
 
@@ -316,14 +341,16 @@ class HealthAnalyzer:
 
             # 干预指标
             interventions = day_data.get('interventions', [])
-            
+
             # 事件统计（后续违规统计会用到）
             events = day_data.get('events', [])
             event_count = len(events)
-            turnaround_count = sum(1 for e in events if e.get('type') == 'turnaround')
-            
-            # 违规/不良行为指标
-            # 优先从 agents 字段读取真实收集的数据（phone_duration_before_sleep, snacking_count 等）
+            turnarounds = [e for e in events if e.get('type') == 'turnaround']
+            turnaround_count = len(turnarounds)
+
+            # ------------------------------------------------------------------ #
+            # 违规/不良行为指标 —— 优先从 day_XX.json 读取准确值
+            # ------------------------------------------------------------------ #
             agents_data = day_data.get('agents', {})
             target_behaviors = day_data.get('target_behaviors', [])
             violation_count = 0
@@ -332,8 +359,6 @@ class HealthAnalyzer:
             phone_duration = 0
 
             if isinstance(agents_data, dict) and agents_data:
-                # 从 agents 中提取真实埋点数据（agent名字可能是中文key）
-                # 尝试找第一个非manager的agent数据
                 for k, v in agents_data.items():
                     if k != 'manager' and isinstance(v, dict):
                         target_agent_data = v
@@ -346,29 +371,53 @@ class HealthAnalyzer:
                     snacking_count = target_agent_data.get('snacking_count', 0)
                     phone_duration = target_agent_data.get('phone_duration_before_sleep', 0)
 
-            # 从 turnarounds 事件统计实际违规次数（折返=被阻止的违规尝试）
-            turnarounds = [e for e in events if e.get('type') == 'turnaround']
-            turnaround_count = len(turnarounds)
-            # 使用 had_violation 和 unblocked_violation_count 字段
+            # 从 complete_results.json 的日数据中取 had_violation / unblocked_violation_count
             had_violation = day_data.get('had_violation', False)
             unblocked_violation_count = day_data.get('unblocked_violation_count', 0)
 
-            # 优先使用 had_violation 和 unblocked_violation_count（更准确的违规数据）
-            # 如果 agents 字典有 violation_count 且 > 0，使用它；否则使用推算值
-            if violation_count == 0:
-                if had_violation:
-                    violation_count = max(1, unblocked_violation_count)
-                # 如果没有 had_violation 标记，用 turnarounds 推算（厨房相关的折返视为偷吃尝试）
-                else:
-                    kitchen_turnarounds = len([e for e in turnarounds if '厨房' in str(e.get('blocked_at', '')) or '厨房' in str(e.get('target_location', ''))])
-                    violation_count = kitchen_turnarounds if kitchen_turnarounds > 0 else turnaround_count
+            # 若 complete_results 中缺失，从 day_XX.json 补充
+            if not had_violation or unblocked_violation_count is None:
+                day_file = self.load_day_file(run_path, day) if run_path else {}
+                if day_file:
+                    if not had_violation:
+                        had_violation = day_file.get('had_violation', False)
+                    if unblocked_violation_count is None:
+                        unblocked_violation_count = day_file.get('unblocked_violation_count', 0)
+                    # 从 day_XX.json 的 agents 字段补充缺失的埋点数据
+                    day_agents = day_file.get('agents', {})
+                    if isinstance(day_agents, dict):
+                        for k, v in day_agents.items():
+                            if k != 'manager' and isinstance(v, dict):
+                                if violation_count == 0:
+                                    violation_count = v.get('violation_count', 0)
+                                if misbehavior_count == 0:
+                                    misbehavior_count = v.get('misbehavior_count', 0)
+                                if snacking_count == 0:
+                                    snacking_count = v.get('snacking_count', 0)
+                                if phone_duration == 0:
+                                    phone_duration = v.get('phone_duration_before_sleep', 0)
+                                break
 
-            # 偷吃次数：从 turnarounds 中统计厨房相关事件
+            # 实际违规次数：优先用 unblocked_violation_count（day_XX.json 中有准确值）
+            if had_violation:
+                # unblocked_violation_count == 0 意味着有违规尝试但全被阻止了，算1次
+                violation_count = max(1, unblocked_violation_count if unblocked_violation_count else 1)
+            elif violation_count == 0:
+                # 没有违规时用厨房相关 turnarounds 推算（作为次优估计）
+                kitchen_turnarounds = [
+                    e for e in turnarounds
+                    if '厨房' in str(e.get('blocked_at', '')) or '厨房' in str(e.get('target_location', ''))
+                ]
+                violation_count = len(kitchen_turnarounds) if kitchen_turnarounds else 0
+
+            # 偷吃次数：优先用 agents 字段，其次用厨房相关 turnarounds
             if snacking_count == 0:
-                kitchen_turnarounds = [e for e in turnarounds if '厨房' in str(e.get('blocked_at', '')) or '厨房' in str(e.get('target_location', ''))]
-                snacking_count = len(kitchen_turnarounds) if kitchen_turnarounds else 0
+                kitchen_turnarounds = [
+                    e for e in turnarounds
+                    if '厨房' in str(e.get('blocked_at', '')) or '厨房' in str(e.get('target_location', ''))
+                ]
+                snacking_count = len(kitchen_turnarounds)
 
-            # 保持 misbehavior_count 与 violation_count 一致
             if misbehavior_count == 0:
                 misbehavior_count = violation_count
 
@@ -379,7 +428,7 @@ class HealthAnalyzer:
             bad_behavior_sent_count = len(bad_intentions)
             blocked_bad_behavior_count = sum(1 for e in bad_intentions if e.get('blocked', False))
             unblocked_bad_behavior_count = bad_behavior_sent_count - blocked_bad_behavior_count
-            
+
             # 干预统计补充
             intervention_count = len(interventions)
             intervention_levels = [inv.get('level', 0) for inv in interventions]
@@ -394,33 +443,55 @@ class HealthAnalyzer:
                 action = inv.get('action', 'unknown')
                 intervention_types[action] += 1
 
-            # 策略相关指标
-            # 注意：dynamic_phase 可能是字符串（阶段名），也可能是字典
-            dynamic_phase_val = day_data.get('dynamic_phase', 'unknown')
-            strategy_phase = dynamic_phase_val if isinstance(dynamic_phase_val, str) else dynamic_phase_val.get('current_phase', 'unknown')
-            
-            # 以下字段在 daily_data 中可能缺失，先给默认值
+            # ------------------------------------------------------------------ #
+            # 策略相关指标 —— 优先从 day_XX.json 的 strategy_manager 读取
+            # ------------------------------------------------------------------ #
             strategy_level = 0
             trust_capital = None
             reputation_score = None
             habit_stage = habit_stage_by_day.get(day, habit_fallback)
-            
-            # 备选：用干预级别推断策略级别
-            intervention_levels = [inv.get('level', 0) for inv in interventions]
-            strategy_level = max(intervention_levels) if intervention_levels else 0
+            strategy_phase = 'unknown'
 
-            # 信任资本：优先日级字段，其次周映射，最后总览当前值
-            if isinstance(dynamic_phase_val, dict):
-                trust_capital = dynamic_phase_val.get('trust_capital')
-                reputation_score = dynamic_phase_val.get('reputation_score')
-                habit_stage = dynamic_phase_val.get('habit_internalization_stage', habit_stage)
+            # 尝试从 day_XX.json 的 strategy_manager.state_update 获取 trust/phase/habit
+            if run_path:
+                day_file = self.load_day_file(run_path, day)
+                if day_file:
+                    sm = day_file.get('strategy_manager', {})
+                    su = sm.get('state_update', {}) if isinstance(sm, dict) else {}
+                    if su:
+                        _tc = su.get('trust_capital')
+                        if _tc is not None:
+                            trust_capital = _tc
+                        _hs = su.get('habit_stage')
+                        if _hs is not None:
+                            habit_stage = _hs
+                        _sp = su.get('phase')
+                        if _sp is not None:
+                            strategy_phase = _sp
+                        if reputation_score is None and trust_capital is not None:
+                            reputation_score = trust_capital
 
+            # 补充：从 complete_results.json 的 dynamic_phase 读取（字符串阶段名）
+            if strategy_phase == 'unknown':
+                dynamic_phase_val = day_data.get('dynamic_phase')
+                if isinstance(dynamic_phase_val, str):
+                    strategy_phase = dynamic_phase_val
+                elif isinstance(dynamic_phase_val, dict):
+                    strategy_phase = dynamic_phase_val.get('current_phase', 'unknown')
+                    if trust_capital is None:
+                        trust_capital = dynamic_phase_val.get('trust_capital')
+                    if reputation_score is None:
+                        reputation_score = dynamic_phase_val.get('reputation_score')
+
+            # 如果 day_XX.json 也没有，从周映射和总览 fallback
             if trust_capital is None:
                 trust_capital = trust_by_day.get(day, trust_fallback)
             if trust_capital is None:
                 trust_capital = 0
+            # strategy_level：优先用当天实际干预中的最高级别（而非 game state current_level）
+            if intervention_levels:
+                strategy_level = max(intervention_levels)
 
-            # 信誉分：若结果中无独立字段，按历史画图脚本逻辑映射为 trust_capital
             if reputation_score is None:
                 reputation_score = trust_capital
 
@@ -751,7 +822,7 @@ Examples:
             print(f"  Processing: {scenario}/{run['name']}...")
             results = analyzer.load_results(run['path'])
             if results:
-                metrics = analyzer.extract_metrics(results)
+                metrics = analyzer.extract_metrics(results, run_path=run['path'])
                 if metrics:
                     all_metrics_by_scenario[scenario][run['name']] = metrics
                     # 从元数据获取评分模式

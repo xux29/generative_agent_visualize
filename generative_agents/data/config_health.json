@@ -12,15 +12,15 @@
     "think": {
       "llm": {
          "provider": "openai",
-        "model": "deepseek-ai/DeepSeek-V4-Flash",
-        "base_url": "https://api.siliconflow.cn/v1",
-        "api_key": "sk-ooanryntbpmpkyizhrpyiiwdyqdgtnjlgjxuneozakzqsrqf",
+        "model": "MiniMax-M2.5-highspeed",
+        "base_url": "https://api.minimaxi.com/v1",
+        "api_key": "sk-cp-iUq9WywIcKDtKHurGM9Lhh89RoSg-9y_zrAZI6yAXT_xeZdinVdgMBbrUYoPqNg905wOUhTUJyCw3OCAvIymWV5VCKWlHL2IGKtiQgKlj8m9SM_1b2hjnSs",
 
         "fallback": {
         "provider": "openai",
-        "model": "deepseek-ai/DeepSeek-V4-Flash",
-        "base_url": "https://api.siliconflow.cn/v1",
-        "api_key": "sk-pisyqhomrjpnsuxgodupbdsaipkvackkkffpftcgyybvmuvk",
+        "model": "MiniMax-M2.5-highspeed",
+        "base_url": "https://api.minimaxi.com/v1",
+        "api_key": "sk-cp-iUq9WywIcKDtKHurGM9Lhh89RoSg-9y_zrAZI6yAXT_xeZdinVdgMBbrUYoPqNg905wOUhTUJyCw3OCAvIymWV5VCKWlHL2IGKtiQgKlj8m9SM_1b2hjnSs",
         "api_keys": [
           "sk-pisyqhomrjpnsuxgodupbdsaipkvackkkffpftcgyybvmuvk",
           "sk-lobdifutmruhfzdtxmtpokizftncwgtfsqejhdeprixxqycc",
