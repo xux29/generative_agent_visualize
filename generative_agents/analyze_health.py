@@ -324,9 +324,15 @@ class HealthAnalyzer:
             if day > 1 and len(metrics) > 0:
                 health_change = health_score - metrics[-1].get('health_score', health_score)
 
-            # 情绪/心情指标
-            emotion_score = day_data.get('emotion_score', 0)
-            emotion_breakdown = day_data.get('emotion_breakdown', {})
+            # 满意度指标（新字段优先，回退旧字段）
+            emotion_score = day_data.get(
+                'satisfaction_score',
+                day_data.get('emotion_score', 0),
+            )
+            emotion_breakdown = day_data.get(
+                'satisfaction_breakdown',
+                day_data.get('emotion_breakdown', {}),
+            )
 
             # 兼容不同结果版本的满意度字段命名
             satisfaction = (
@@ -549,6 +555,7 @@ class HealthAnalyzer:
                 'health_score': round(health_score, 2),
                 'health_change': round(health_change, 2),
                 'emotion_score': round(emotion_score, 2),
+                'satisfaction_score': round(satisfaction, 2),
                 'satisfaction': round(satisfaction, 2),
                 'mood': mood,
                 'health_score_10': round(health_score_10, 2),
@@ -625,7 +632,7 @@ class HealthAnalyzer:
         fieldnames = [
             'day', 'date',
             'health_score', 'health_change', 'health_score_10',
-            'emotion_score', 'satisfaction', 'mood',
+            'emotion_score', 'satisfaction_score', 'satisfaction', 'mood',
             'intervention_count', 'max_intervention_level', 'avg_intervention_level',
             'successful_interventions', 'intervention_success_rate', 'compliance_rate',
             'intervention_types',

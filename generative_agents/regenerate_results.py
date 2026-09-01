@@ -76,8 +76,11 @@ class Regenerator:
                 "max_health_score": float('-inf'),
                 "min_emotion_score": float('inf'),
                 "max_emotion_score": float('-inf'),
+                "min_satisfaction_score": float('inf'),
+                "max_satisfaction_score": float('-inf'),
                 "average_health_score": 0,
                 "average_emotion_score": 0,
+                "average_satisfaction_score": 0,
                 "total_interventions": 0,
                 "intervention_by_level": {"0": 0, "1": 0, "2": 0, "3": 0},
                 "compliance_rate": 0,
@@ -94,6 +97,7 @@ class Regenerator:
                 "days": [],
                 "health_scores": [],
                 "emotion_scores": [],
+                "satisfaction_scores": [],
                 "intervention_levels": [],
             },
         }
@@ -106,7 +110,14 @@ class Regenerator:
         for day_log in daily_logs:
             day_num = day_log.get("day", 0)
             health_score = day_log.get("health_score", 0)
-            emotion_score = day_log.get("emotion_score", 0)
+            emotion_score = day_log.get(
+                "satisfaction_score",
+                day_log.get("emotion_score", 0),
+            )
+            satisfaction_breakdown = day_log.get(
+                "satisfaction_breakdown",
+                day_log.get("emotion_breakdown", {}),
+            )
             events = day_log.get("events", [])
             interventions = day_log.get("interventions", [])
             dynamic_phase = day_log.get("dynamic_phase", "honeymoon")
@@ -117,7 +128,9 @@ class Regenerator:
                 "date": day_log.get("date", ""),
                 "health_score": health_score,
                 "emotion_score": emotion_score,
-                "emotion_breakdown": day_log.get("emotion_breakdown", {}),
+                "satisfaction_score": emotion_score,
+                "emotion_breakdown": satisfaction_breakdown,
+                "satisfaction_breakdown": satisfaction_breakdown,
                 "events": events,
                 "interventions": interventions,
                 "reflection": day_log.get("reflection", {}),
@@ -139,6 +152,10 @@ class Regenerator:
                 complete_results["summary"]["min_emotion_score"], emotion_score)
             complete_results["summary"]["max_emotion_score"] = max(
                 complete_results["summary"]["max_emotion_score"], emotion_score)
+            complete_results["summary"]["min_satisfaction_score"] = min(
+                complete_results["summary"]["min_satisfaction_score"], emotion_score)
+            complete_results["summary"]["max_satisfaction_score"] = max(
+                complete_results["summary"]["max_satisfaction_score"], emotion_score)
 
             total_health += health_score
             total_emotion += emotion_score
@@ -155,6 +172,7 @@ class Regenerator:
             complete_results["trend_data"]["days"].append(day_num)
             complete_results["trend_data"]["health_scores"].append(health_score)
             complete_results["trend_data"]["emotion_scores"].append(emotion_score)
+            complete_results["trend_data"]["satisfaction_scores"].append(emotion_score)
             max_level = max([i.get("level", 0) for i in interventions]) if interventions else 0
             complete_results["trend_data"]["intervention_levels"].append(max_level)
 
@@ -169,6 +187,7 @@ class Regenerator:
         if n > 0:
             complete_results["summary"]["average_health_score"] = total_health / n
             complete_results["summary"]["average_emotion_score"] = total_emotion / n
+            complete_results["summary"]["average_satisfaction_score"] = total_emotion / n
             complete_results["summary"]["total_interventions"] = total_interventions
             complete_results["summary"]["violation_count"] = violations
             complete_results["summary"]["compliance_rate"] = (n - violations) / n

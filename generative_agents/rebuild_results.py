@@ -55,9 +55,10 @@ def rebuild_results(run_dir: Path):
         "daily_data": [],
         "summary": {
             "total_days_completed": len(daily_logs),
-            "average_health_score": 0, "average_emotion_score": 0,
+            "average_health_score": 0, "average_emotion_score": 0, "average_satisfaction_score": 0,
             "min_health_score": 100, "max_health_score": 0,
             "min_emotion_score": 10, "max_emotion_score": 0,
+            "min_satisfaction_score": 10, "max_satisfaction_score": 0,
             "total_interventions": 0,
             "intervention_by_level": {"0": 0, "1": 0, "2": 0, "3": 0},
             "compliance_rate": 0, "violation_count": 0,
@@ -69,7 +70,7 @@ def rebuild_results(run_dir: Path):
             "stable": {"days": [], "avg_health": 0, "avg_emotion": 0, "interventions": 0, "description": "稳定期"},
             "relapse": {"days": [], "avg_health": 0, "avg_emotion": 0, "interventions": 0, "description": "复发期"},
         },
-        "trend_data": {"days": [], "health_scores": [], "emotion_scores": [], "intervention_levels": []},
+        "trend_data": {"days": [], "health_scores": [], "emotion_scores": [], "satisfaction_scores": [], "intervention_levels": []},
     }
 
     total_score, total_emotion_score, total_interventions, violations = 0, 0, 0, 0
@@ -78,7 +79,11 @@ def rebuild_results(run_dir: Path):
         day_num = day_log.get("day", i + 1)
         date = day_log.get("date", "")
         health_score = day_log.get("health_score", day_log.get("new_score", 75))
-        emotion_score = day_log.get("emotion_score", 5.0)
+        # 新字段优先，回退旧字段
+        emotion_score = day_log.get(
+            "satisfaction_score",
+            day_log.get("emotion_score", 5.0),
+        )
         day_interventions = day_log.get("interventions", [])
         intervention_count = len(day_interventions)
         max_level = max([iv.get("level", 0) for iv in day_interventions], default=0)
@@ -104,7 +109,8 @@ def rebuild_results(run_dir: Path):
 
         complete_results["daily_data"].append({
             "day": day_num, "date": date, "health_score": health_score,
-            "emotion_score": emotion_score, "interventions": day_interventions,  # 完整列表
+            "emotion_score": emotion_score, "satisfaction_score": emotion_score,
+            "interventions": day_interventions,  # 完整列表
             "max_intervention_level": max_level, "violations": violation_count,
             "dynamic_phase": dynamic_phase, "summary": day_log.get("summary", ""),
             # 新增违规相关字段
@@ -128,11 +134,16 @@ def rebuild_results(run_dir: Path):
             complete_results["summary"]["min_emotion_score"] = emotion_score
         if emotion_score > complete_results["summary"]["max_emotion_score"]:
             complete_results["summary"]["max_emotion_score"] = emotion_score
+        if emotion_score < complete_results["summary"]["min_satisfaction_score"]:
+            complete_results["summary"]["min_satisfaction_score"] = emotion_score
+        if emotion_score > complete_results["summary"]["max_satisfaction_score"]:
+            complete_results["summary"]["max_satisfaction_score"] = emotion_score
 
         complete_results["summary"]["intervention_by_level"][str(max_level)] += 1
         complete_results["trend_data"]["days"].append(day_num)
         complete_results["trend_data"]["health_scores"].append(health_score)
         complete_results["trend_data"]["emotion_scores"].append(emotion_score)
+        complete_results["trend_data"]["satisfaction_scores"].append(emotion_score)
         complete_results["trend_data"]["intervention_levels"].append(max_level)
 
         if dynamic_phase in complete_results["phase_analysis"]:
@@ -142,6 +153,7 @@ def rebuild_results(run_dir: Path):
     if daily_logs:
         complete_results["summary"]["average_health_score"] = total_score / len(daily_logs)
         complete_results["summary"]["average_emotion_score"] = total_emotion_score / len(daily_logs)
+        complete_results["summary"]["average_satisfaction_score"] = total_emotion_score / len(daily_logs)
         complete_results["summary"]["total_interventions"] = total_interventions
         complete_results["summary"]["violation_count"] = violations
         complete_results["summary"]["compliance_rate"] = (len(daily_logs) - violations) / len(daily_logs)

@@ -1198,29 +1198,34 @@ class HealthSimulation:
         successful_interventions = sum(1 for a in manager_actions if a.get("reasonability") == "reasonable")
         compliance_rate = successful_interventions / intervention_count if intervention_count > 0 else 0.5
 
-        # 调用Scorer计算情绪分（使用自律程度感知的新方法）
+        # 调用Scorer计算满意度（合并后的统一主观评分，含原心情分的 Π / N / σ_m 修正）
         cumulative_state = self.cumulative_health_scorer.get_summary()
-        emotion_score, emotion_breakdown = Scorer.calculate_mood_score_with_discipline(
+        satisfaction_score, satisfaction_breakdown = Scorer.calculate_satisfaction_score(
             manager_actions=manager_actions,
             day=day,
-            discipline_level=self.discipline_level,
-            health_score=health_score,
-            cumulative_health=cumulative_state,
             habit_streak=habit_streak,
-            compliance_rate=compliance_rate
+            compliance_rate=compliance_rate,
+            health_score=health_score,
+            discipline_level=self.discipline_level,
+            cumulative_health=cumulative_state,
         )
 
-        day_log["emotion_score"] = round(emotion_score, 1)
-        day_log["emotion_breakdown"] = emotion_breakdown
+        day_log["satisfaction_score"] = round(satisfaction_score, 1)
+        day_log["satisfaction_breakdown"] = satisfaction_breakdown
+        # 向后兼容：旧脚本仍读取 emotion_score 别名
+        day_log["emotion_score"] = day_log["satisfaction_score"]
+        day_log["emotion_breakdown"] = satisfaction_breakdown
         self.logger.info(
-            f"Day {day} Mood Score: {emotion_score:.1f}/10 "
+            f"Day {day} Satisfaction Score: {satisfaction_score:.1f}/10 "
             f"(discipline: {self.discipline_level}, "
             f"tide: {cumulative_state['tide_phase']})"
         )
 
-        # v2新增：设置情绪上下文供策略管理器使用
+        # v2新增：设置满意度上下文供策略管理器使用
         if hasattr(self.strategy_manager, 'set_emotion_context'):
-            self.strategy_manager.set_emotion_context(emotion_score, day)
+            self.strategy_manager.set_emotion_context(satisfaction_score, day)
+        if hasattr(self.strategy_manager, 'set_satisfaction_context'):
+            self.strategy_manager.set_satisfaction_context(satisfaction_score, day)
 
         # 更新策略管理器状态（潮汐性动态调整 + 长期机制）
         intervention_count = len(day_log.get("interventions", []))
@@ -1229,16 +1234,16 @@ class HealthSimulation:
         high_level_interventions = sum(1 for inv in day_log.get("interventions", []) if inv.get("level", 0) >= 2)
         was_proactive = health_score >= 6 and high_level_interventions == 0
 
-        # 判断情绪是否积极（基于情绪分）
-        emotion_positive = emotion_score >= 5.0 if emotion_score else None
+        # 判断满意度是否积极（基于满意度分）
+        emotion_positive = satisfaction_score >= 5.0 if satisfaction_score else None
 
         # 判断是否抵抗干预（有干预但不遵从）
         failed_interventions = sum(1 for inv in day_log.get("interventions", []) if not inv.get("succeeded", True))
         resisted_intervention = failed_interventions > 0 and intervention_count > 0
 
-        # 判断是否发生冲突（高级干预多次 + 情绪低落，或明显对抗）
+        # 判断是否发生冲突（高级干预多次 + 满意度低落，或明显对抗）
         had_conflict = (
-            (high_level_interventions >= 2 and emotion_score and emotion_score < 4.0) or
+            (high_level_interventions >= 2 and satisfaction_score and satisfaction_score < 4.0) or
             (failed_interventions >= 2) or
             any(inv.get("had_conflict", False) for inv in day_log.get("interventions", []))
         )
@@ -1815,8 +1820,8 @@ class HealthSimulation:
                 was_successful=inv.get("succeeded", True)
             )
 
-        # 计算情绪分（使用自律程度感知的新方法）
-        # 只统计真正干预的（level > 0），level=0表示"观察/不干预"不应影响情绪
+        # 计算满意度（合并后的统一主观评分，含原心情分的 Π / N / σ_m 修正）
+        # 只统计真正干预的（level > 0），level=0表示"观察/不干预"不应影响满意度
         manager_actions = [inv for inv in day_log.get("interventions", []) if inv.get("level", 0) > 0]
         intervention_count = len(manager_actions)
         habit_streak = getattr(self.target_agent, 'habit_streak', 0)
@@ -1824,35 +1829,40 @@ class HealthSimulation:
         compliance_rate = successful_interventions / intervention_count if intervention_count > 0 else 0.5
 
         cumulative_state = self.cumulative_health_scorer.get_summary()
-        emotion_score, emotion_breakdown = Scorer.calculate_mood_score_with_discipline(
+        satisfaction_score, satisfaction_breakdown = Scorer.calculate_satisfaction_score(
             manager_actions=manager_actions,
             day=day,
-            discipline_level=self.discipline_level,
-            health_score=health_score,
-            cumulative_health=cumulative_state,
             habit_streak=habit_streak,
-            compliance_rate=compliance_rate
+            compliance_rate=compliance_rate,
+            health_score=health_score,
+            discipline_level=self.discipline_level,
+            cumulative_health=cumulative_state,
         )
 
-        day_log["emotion_score"] = round(emotion_score, 1)
-        day_log["emotion_breakdown"] = emotion_breakdown
+        day_log["satisfaction_score"] = round(satisfaction_score, 1)
+        day_log["satisfaction_breakdown"] = satisfaction_breakdown
+        # 向后兼容：旧脚本仍读取 emotion_score 别名
+        day_log["emotion_score"] = day_log["satisfaction_score"]
+        day_log["emotion_breakdown"] = satisfaction_breakdown
         self.logger.info(
-            f"Day {day} Mood Score: {emotion_score:.1f}/10 "
+            f"Day {day} Satisfaction Score: {satisfaction_score:.1f}/10 "
             f"(discipline: {self.discipline_level})"
         )
 
-        # v2新增：设置情绪上下文供策略管理器使用
+        # v2新增：设置满意度上下文供策略管理器使用
         if hasattr(self.strategy_manager, 'set_emotion_context'):
-            self.strategy_manager.set_emotion_context(emotion_score, day)
+            self.strategy_manager.set_emotion_context(satisfaction_score, day)
+        if hasattr(self.strategy_manager, 'set_satisfaction_context'):
+            self.strategy_manager.set_satisfaction_context(satisfaction_score, day)
 
         # 更新策略管理器
         high_level_interventions = sum(1 for inv in day_log.get("interventions", []) if inv.get("level", 0) >= 2)
         was_proactive = health_score >= 6 and high_level_interventions == 0
-        emotion_positive = emotion_score >= 5.0 if emotion_score else None
+        emotion_positive = satisfaction_score >= 5.0 if satisfaction_score else None
         failed_interventions = sum(1 for inv in day_log.get("interventions", []) if not inv.get("succeeded", True))
         resisted_intervention = failed_interventions > 0 and intervention_count > 0
         had_conflict = (
-            (high_level_interventions >= 2 and emotion_score and emotion_score < 4.0) or
+            (high_level_interventions >= 2 and satisfaction_score and satisfaction_score < 4.0) or
             (failed_interventions >= 2) or
             any(inv.get("had_conflict", False) for inv in day_log.get("interventions", []))
         )
@@ -3036,8 +3046,11 @@ class HealthSimulation:
             "manager": self.manager_name,
             "total_days": self.days,
             "daily_health_scores": [],
+            "daily_satisfaction_scores": [],
+            # 向后兼容别名（旧字段名）
             "daily_emotion_scores": [],
             "average_health_score": 0,
+            "average_satisfaction_score": 0,
             "average_emotion_score": 0,
             "intervention_summary": {
                 "level_0": 0,
@@ -3048,14 +3061,19 @@ class HealthSimulation:
         }
 
         total_health_score = 0
-        total_emotion_score = 0
+        total_satisfaction_score = 0
         for log in self.daily_logs:
             health_score = log.get("health_score", 0)
-            emotion_score = log.get("emotion_score", 5.0)
+            # 新字段名优先，回退旧字段名（兼容历史 checkpoint）
+            satisfaction_score = log.get(
+                "satisfaction_score",
+                log.get("emotion_score", 5.0),
+            )
             report["daily_health_scores"].append(health_score)
-            report["daily_emotion_scores"].append(emotion_score)
+            report["daily_satisfaction_scores"].append(satisfaction_score)
+            report["daily_emotion_scores"].append(satisfaction_score)
             total_health_score += health_score
-            total_emotion_score += emotion_score
+            total_satisfaction_score += satisfaction_score
 
             for intervention in log.get("interventions", []):
                 level = intervention.get("level", 0)
@@ -3063,7 +3081,8 @@ class HealthSimulation:
                     report["intervention_summary"][f"level_{level}"] += 1
 
         report["average_health_score"] = total_health_score / len(self.daily_logs) if self.daily_logs else 0
-        report["average_emotion_score"] = total_emotion_score / len(self.daily_logs) if self.daily_logs else 0
+        report["average_satisfaction_score"] = total_satisfaction_score / len(self.daily_logs) if self.daily_logs else 0
+        report["average_emotion_score"] = report["average_satisfaction_score"]
 
         # 添加长期机制信息
         report["long_term_analysis"] = {
@@ -3088,7 +3107,8 @@ class HealthSimulation:
     def _generate_markdown_report(self, report):
         """Generate markdown summary report"""
         health_scores = report['daily_health_scores']
-        emotion_scores = report.get('daily_emotion_scores', [])
+        # 新字段优先，回退旧字段（兼容历史报告）
+        emotion_scores = report.get('daily_satisfaction_scores') or report.get('daily_emotion_scores', [])
 
         # 健康分趋势
         h_week1 = health_scores[:7] if len(health_scores) >= 7 else health_scores
@@ -3126,8 +3146,8 @@ class HealthSimulation:
 - **每日健康分**: {', '.join(str(s) for s in report['daily_health_scores'])}
 
 ## 情绪评分（满意度）
-- **平均情绪分**: {report.get('average_emotion_score', 0):.2f} / 10
-- **每日情绪分**: {', '.join(str(s) for s in report.get('daily_emotion_scores', []))}
+- **平均满意度分**: {report.get('average_satisfaction_score', report.get('average_emotion_score', 0)):.2f} / 10
+- **每日满意度分**: {', '.join(str(s) for s in report.get('daily_satisfaction_scores') or report.get('daily_emotion_scores', []))}
 
 ## 干预策略统计
 | 级别 | 次数 | 说明 |
@@ -3160,19 +3180,19 @@ class HealthSimulation:
 | 指标 | 平均分 |
 |------|--------|
 | 健康分 | {h_week1_avg:.2f} |
-| 情绪分 | {e_week1_avg:.2f} |
+| 满意度分 | {e_week1_avg:.2f} |
 
 ### 第二至三周（调整期 Days 8-21）
 | 指标 | 平均分 |
 |------|--------|
 | 健康分 | {h_week2_3_avg:.2f} |
-| 情绪分 | {e_week2_3_avg:.2f} |
+| 满意度分 | {e_week2_3_avg:.2f} |
 
 ### 第四周及以后（倦怠/稳定期 Days 22+）
 | 指标 | 平均分 |
 |------|--------|
 | 健康分 | {h_week4_6_avg:.2f} |
-| 情绪分 | {e_week4_6_avg:.2f} |
+| 满意度分 | {e_week4_6_avg:.2f} |
 
 ---
 *报告由 GenerativeAgentsCN 健康管理模拟系统自动生成*
@@ -3210,9 +3230,12 @@ class HealthSimulation:
             "summary": {
                 "total_days_completed": len(self.daily_logs),
                 "average_health_score": 0,
+                "average_satisfaction_score": 0,
                 "average_emotion_score": 0,
                 "min_health_score": 10,
                 "max_health_score": 0,
+                "min_satisfaction_score": 10,
+                "max_satisfaction_score": 0,
                 "min_emotion_score": 10,
                 "max_emotion_score": 0,
                 "total_interventions": 0,
@@ -3232,6 +3255,7 @@ class HealthSimulation:
                 "days": [],
                 "health_scores": [],
                 "emotion_scores": [],
+                "satisfaction_scores": [],
                 "intervention_levels": [],
                 "intentions": [],
                 "outcomes": [],
@@ -3255,7 +3279,15 @@ class HealthSimulation:
         for i, day_log in enumerate(self.daily_logs):
             day_num = i + 1
             health_score = day_log.get("health_score", 0)
-            emotion_score = day_log.get("emotion_score", 5.0)
+            # 满意度（新字段名优先，回退旧字段）
+            emotion_score = day_log.get(
+                "satisfaction_score",
+                day_log.get("emotion_score", 5.0),
+            )
+            satisfaction_breakdown = day_log.get(
+                "satisfaction_breakdown",
+                day_log.get("emotion_breakdown", {}),
+            )
 
             # 收集每日详细数据
             daily_entry = {
@@ -3263,7 +3295,9 @@ class HealthSimulation:
                 "date": day_log.get("date", ""),
                 "health_score": health_score,
                 "emotion_score": emotion_score,
-                "emotion_breakdown": day_log.get("emotion_breakdown", {}),
+                "satisfaction_score": emotion_score,
+                "emotion_breakdown": satisfaction_breakdown,
+                "satisfaction_breakdown": satisfaction_breakdown,
                 "events": day_log.get("events", []),
                 "interventions": day_log.get("interventions", []),
                 "reflection": day_log.get("reflection", {}),
@@ -3277,13 +3311,19 @@ class HealthSimulation:
             }
             complete_results["daily_data"].append(daily_entry)
 
-            # 情绪分统计
+            # 满意度统计
             total_emotion_score += emotion_score
             complete_results["summary"]["min_emotion_score"] = min(
                 complete_results["summary"]["min_emotion_score"], emotion_score
             )
             complete_results["summary"]["max_emotion_score"] = max(
                 complete_results["summary"]["max_emotion_score"], emotion_score
+            )
+            complete_results["summary"]["min_satisfaction_score"] = min(
+                complete_results["summary"]["min_satisfaction_score"], emotion_score
+            )
+            complete_results["summary"]["max_satisfaction_score"] = max(
+                complete_results["summary"]["max_satisfaction_score"], emotion_score
             )
 
             # 汇总统计
@@ -3309,6 +3349,7 @@ class HealthSimulation:
             complete_results["trend_data"]["days"].append(day_num)
             complete_results["trend_data"]["health_scores"].append(health_score)
             complete_results["trend_data"]["emotion_scores"].append(emotion_score)
+            complete_results["trend_data"]["satisfaction_scores"].append(emotion_score)
 
             # 当日最高干预级别
             max_level = max([i.get("level", 0) for i in day_interventions]) if day_interventions else 0
@@ -3324,6 +3365,7 @@ class HealthSimulation:
         if self.daily_logs:
             complete_results["summary"]["average_health_score"] = total_score / len(self.daily_logs)
             complete_results["summary"]["average_emotion_score"] = total_emotion_score / len(self.daily_logs)
+            complete_results["summary"]["average_satisfaction_score"] = total_emotion_score / len(self.daily_logs)
             complete_results["summary"]["total_interventions"] = total_interventions
             complete_results["summary"]["violation_count"] = violations
             complete_results["summary"]["compliance_rate"] = (
@@ -3383,7 +3425,7 @@ class HealthSimulation:
                         "天数": day_data["day"],
                         "日期": day_data.get("date", ""),
                         "健康分": day_data["health_score"],
-                        "情绪分": day_data.get("emotion_score", 5.0),
+                        "满意度分": day_data.get("satisfaction_score", day_data.get("emotion_score", 5.0)),
                         "干预次数": intervention_count,
                         "最高干预级别": max_level,
                         "阶段": phase_display,
@@ -3403,9 +3445,9 @@ class HealthSimulation:
                     {"指标": "平均健康分", "值": f"{summary['average_health_score']:.2f}"},
                     {"指标": "最低健康分", "值": summary["min_health_score"]},
                     {"指标": "最高健康分", "值": summary["max_health_score"]},
-                    {"指标": "平均情绪分", "值": f"{summary.get('average_emotion_score', 0):.2f}"},
-                    {"指标": "最低情绪分", "值": f"{summary.get('min_emotion_score', 0):.1f}"},
-                    {"指标": "最高情绪分", "值": f"{summary.get('max_emotion_score', 0):.1f}"},
+                    {"指标": "平均满意度分", "值": f"{summary.get('average_satisfaction_score', summary.get('average_emotion_score', 0)):.2f}"},
+                    {"指标": "最低满意度分", "值": f"{summary.get('min_satisfaction_score', summary.get('min_emotion_score', 0)):.1f}"},
+                    {"指标": "最高满意度分", "值": f"{summary.get('max_satisfaction_score', summary.get('max_emotion_score', 0)):.1f}"},
                     {"指标": "总干预次数", "值": summary["total_interventions"]},
                     {"指标": "Level 0 (观察)", "值": summary["intervention_by_level"]["0"]},
                     {"指标": "Level 1 (劝说)", "值": summary["intervention_by_level"]["1"]},
@@ -3435,7 +3477,7 @@ class HealthSimulation:
                             "时间范围": f"Day {day_range}" if day_range != "N/A" else "N/A",
                             "总天数": phase_data.get("total_days", len(phase_data["days"])),
                             "平均健康分": f"{phase_data.get('avg_health', 0):.2f}",
-                            "平均情绪分": f"{phase_data.get('avg_emotion', 0):.2f}",
+                            "平均满意度分": f"{phase_data.get('avg_emotion', 0):.2f}",
                             "干预次数": phase_data["interventions"],
                         })
                 df_phase = pd.DataFrame(phase_rows)

@@ -1,6 +1,6 @@
 """generative_agents.scorer_nonlinear
 
-非线性健康分计算系统 + 满意度/心情/行为分项/综合评估（Scorer）
+非线性健康分计算系统 + 满意度/行为分项/综合评估（Scorer）
 
 健康分核心（NonlinearHealthScorer）：
 1. 阈值效应：不同健康区间有不同的敏感度
@@ -8,8 +8,9 @@
 3. 随机波动：模拟日常生理/心理变异
 4. 个体差异：同等级内参数有分布范围
 
-满意度 / 心情 / 行为扣分 / 综合评估：见本文件末尾 `Scorer` 类
+满意度 / 行为扣分 / 综合评估：见本文件末尾 `Scorer` 类
 （已从 scorer.py 迁入；后续只在本文件修改）。
+原"心情分"已并入 `calculate_satisfaction_score`，不再独立输出。
 
 详细设计文档：../HEALTH_SCORING_NONLINEAR_ANALYSIS.md
 """
@@ -722,8 +723,9 @@ class NonlinearHealthScorer:
 
 
 # =============================================================================
-# 满意度 / 心情 / 行为分项 / 综合评估（从 scorer.py 迁入）
+# 满意度 / 行为分项 / 综合评估（从 scorer.py 迁入）
 # 后续只在本文件维护这些计算逻辑；线性 CumulativeHealthScorer 不再作为主路径。
+# 原"心情分"已合并到满意度，不再单独输出。
 # =============================================================================
 
 
@@ -1529,99 +1531,172 @@ class Scorer:
         return penalty
 
     @staticmethod
-    def calculate_satisfaction_score(manager_actions, day, habit_streak=0, compliance_rate=0.5, health_score=5):
+    def calculate_satisfaction_score(
+        manager_actions,
+        day,
+        habit_streak=0,
+        compliance_rate=0.5,
+        health_score=5,
+        discipline_level="medium",
+        cumulative_health=None,
+    ):
         """
-        基于公式计算满意度分数（取代LLM生成）- 增强版
+        基于公式计算满意度分数（取代 LLM 生成）
 
-        公式（增强版 - 基于会议讨论2026-01-22）：
-        满意度 = 基础分(6.0)
-               + 阶段基础修正
-               + 干预频率修正
-               + 干预强度修正 * 阶段敏感度
-               + 干预合理性修正
-               + 习惯养成修正（加强版）
-               + 自主性修正
-               + 遵从率修正
-               + 过度干预惩罚（新增：好了还严管的惩罚）
+        合并"满意度"与原"心情分"后，统一由本函数输出，整合：
+          - 对干预过程的评价（频率 / 强度 / 合理性 / 自主性 / 过度干预）
+          - 对当下健康状态的即时情绪反应（平台期严管 $\\Pi_t$ / 健康分低而无人管的焦虑 $N_t$）
+        所有"负面惩罚项"按情绪敏感度 $\\sigma_m$ 放大，正面反馈保持自律等级无关。
+
+        公式（$\\sigma_m \\in \\{0.7, 1.0, 1.5\\}$，HIGH/MEDIUM/LOW）：
+            Sat = clip[1,10]( β₀ + P + F + I + Π + N + R + H + U + C + O )
+            F / I / Π / N / O 及 R 的负向部分  *= σ_m
+            H / C / U / R 的正向部分            不受 σ_m 影响
 
         Args:
             manager_actions: Manager 当日的干预动作列表
             day: 当前天数
             habit_streak: 连续自律天数
             compliance_rate: 遵从率 (0.0-1.0)
-            health_score: 当日健康分 (0-10)，新增参数
+            health_score: 当日健康分（0-10）；若 >10 视为 0-100 区间，会被映射到 0-10
+            discipline_level: 自律程度（high/medium/low），用于取 σ_m
+            cumulative_health: 健康分累计状态 dict（含 in_plateau 字段，可选）
 
         Returns:
-            tuple: (满意度分数1-10, 评分明细dict)
+            tuple: (满意度分数 1-10, 评分明细 dict)
         """
         BASE_SCORE = get_path("simulation.satisfaction.base_score", default=6.0)
 
-        # 获取阶段信息
-        phase = Scorer.get_discipline_phase(day)
-        phase_info = Scorer._discipline_phase_modifiers()[phase]
+        # 健康分归一化到 [0,10]（调用方可能传入 0-100 区间的累计健康分）
+        if health_score is None:
+            health_score = 5.0
+        if health_score > 10:
+            health_score = health_score / 10.0
 
-        # 1. 阶段基础修正
-        phase_base_modifier = phase_info["base"]
-
-        # 2. 干预频率修正
-        intervention_count = len(manager_actions) if manager_actions else 0
-        frequency_modifier = Scorer.calc_intervention_frequency_modifier(intervention_count)
-
-        # 3. 干预强度修正（考虑阶段敏感度）
-        phase_sensitivity = phase_info["intervention_sensitivity"]
-        intensity_modifier = Scorer.calc_intervention_intensity_modifier(
-            manager_actions, phase_sensitivity
+        # 情绪敏感度 σ_m
+        try:
+            disc_level = SelfDisciplineLevel(str(discipline_level).lower())
+        except (ValueError, AttributeError):
+            disc_level = SelfDisciplineLevel.MEDIUM
+        _mood_sens_defaults = {"high": 0.7, "medium": 1.0, "low": 1.5}
+        mood_sensitivity = get_path(
+            f"simulation.health.discipline_params.{disc_level.value}.mood_sensitivity",
+            default=_mood_sens_defaults.get(disc_level.value, 1.0),
         )
 
-        # 4. 干预合理性修正
-        reasonability_modifier = Scorer.calc_intervention_reasonability_modifier(manager_actions)
+        # 阶段信息
+        phase = Scorer.get_discipline_phase(day)
+        phase_info = Scorer._discipline_phase_modifiers()[phase]
+        phase_sensitivity = phase_info["intervention_sensitivity"]
 
-        # 5. 习惯养成修正（加强版）
+        # 干预基础量
+        intervention_count = len(manager_actions) if manager_actions else 0
         max_intervention_level = 0
         if manager_actions:
             max_intervention_level = max(a.get("level", 0) for a in manager_actions)
-        habit_modifier = Scorer.calc_habit_streak_modifier(habit_streak, max_intervention_level)
 
-        # 6. 自主性修正
-        autonomy_modifier = Scorer.calc_autonomy_modifier(manager_actions)
+        # 1. 阶段基础修正（不受 σ_m 影响）
+        phase_base_modifier = phase_info["base"]
 
-        # 7. 遵从率修正：遵从率高意味着干预有效，长期会提升满意度
-        # 公式: (compliance_rate - 0.5) * 1.0，范围 -0.5 ~ +0.5
-        compliance_modifier = (compliance_rate - 0.5) * 1.0
+        # 2. 干预频率修正：负面惩罚，受 σ_m 放大
+        freq_cfg = get_path("simulation.satisfaction.frequency_penalty", default=None) or {}
+        freq_per = freq_cfg.get("per_intervention", -0.5)
+        freq_floor = freq_cfg.get("floor", -3.0)
+        frequency_modifier = max(freq_floor, freq_per * intervention_count * mood_sensitivity)
 
-        # 8. 【新增】过度干预惩罚：好了还严管 → 不高兴
-        overintervention_penalty = Scorer.calc_overintervention_penalty(
-            habit_streak, health_score, intervention_count, max_intervention_level
+        # 3. 干预强度修正：负面惩罚，受 σ_m 与阶段敏感度共同放大
+        intensity_modifier = Scorer.calc_intervention_intensity_modifier(
+            manager_actions, phase_sensitivity * mood_sensitivity
         )
 
-        # 汇总计算
+        # 4. 平台期严管惩罚 Π_t（仅当 in_plateau 且被 ≥L2 干预时触发）
+        plateau_cfg = get_path("simulation.satisfaction.plateau_penalty", default=None) or {}
+        plateau_min_level = plateau_cfg.get("min_level", 2)
+        plateau_amount = plateau_cfg.get("amount", -1.5)
+        in_plateau = bool((cumulative_health or {}).get("in_plateau", False))
+        if in_plateau and max_intervention_level >= plateau_min_level:
+            plateau_penalty = plateau_amount * mood_sensitivity
+        else:
+            plateau_penalty = 0.0
+
+        # 5. 忽视惩罚 N_t：健康分低但无人管 / 干预不足
+        neglect_cfg = get_path("simulation.satisfaction.neglect_penalty", default=None) or {}
+        neglect_health_low = neglect_cfg.get("health_lt", 5.0)        # 对应 0-10 区间
+        neglect_when_no = neglect_cfg.get("when_no_intervention", -1.0)
+        neglect_health_danger = neglect_cfg.get("health_danger_lt", 4.0)
+        neglect_when_weak = neglect_cfg.get("when_weak_intervention", -0.5)
+        if health_score < neglect_health_low and intervention_count == 0:
+            neglect_penalty = neglect_when_no * mood_sensitivity
+        elif health_score < neglect_health_danger and max_intervention_level < 2:
+            neglect_penalty = neglect_when_weak * mood_sensitivity
+        else:
+            neglect_penalty = 0.0
+
+        # 6. 干预合理性修正：合理奖励、不必要惩罚（仅负向部分受 σ_m 放大）
+        reasonability_map = Scorer._intervention_reasonability()
+        reasonability_modifier = 0.0
+        for action in (manager_actions or []):
+            rsb = action.get("reasonability", "preventive")
+            if rsb == "unnecessary":
+                reasonability_modifier += (
+                    reasonability_map.get("unnecessary", -0.5) * mood_sensitivity
+                )
+            elif rsb == "reasonable":
+                reasonability_modifier += reasonability_map.get("reasonable", 0.5)
+            else:
+                reasonability_modifier += reasonability_map.get("preventive", 0.0)
+
+        # 7. 习惯养成修正（正面反馈，不受 σ_m 影响）
+        habit_modifier = Scorer.calc_habit_streak_modifier(habit_streak, max_intervention_level)
+
+        # 8. 自主性修正（正面反馈，不受 σ_m 影响）
+        autonomy_modifier = Scorer.calc_autonomy_modifier(manager_actions)
+
+        # 9. 遵从率修正（正面反馈，不受 σ_m 影响）
+        compliance_modifier = (compliance_rate - 0.5) * 1.0
+
+        # 10. 过度干预惩罚 O_t：负面惩罚，受 σ_m 放大
+        overintervention_base = Scorer.calc_overintervention_penalty(
+            habit_streak, health_score, intervention_count, max_intervention_level
+        )
+        # calc_overintervention_penalty 自身已产出可正可负的值；为统一 σ_m 放大规则，
+        # 这里只在 O_t < 0 时乘 σ_m（正向时视作已退化为 0）。
+        overintervention_penalty = overintervention_base * mood_sensitivity
+
+        # 汇总
         total_score = (
             BASE_SCORE
             + phase_base_modifier
             + frequency_modifier
             + intensity_modifier
+            + plateau_penalty
+            + neglect_penalty
             + reasonability_modifier
             + habit_modifier
             + autonomy_modifier
             + compliance_modifier
-            + overintervention_penalty  # 新增
+            + overintervention_penalty
         )
 
-        # 限制在1-10范围内
         final_score = max(1.0, min(10.0, total_score))
 
-        # 返回评分明细供调试和分析
         breakdown = {
             "base_score": BASE_SCORE,
+            "discipline_level": disc_level.value,
+            "mood_sensitivity": mood_sensitivity,
             "phase": phase,
             "phase_base_modifier": phase_base_modifier,
             "frequency_modifier": frequency_modifier,
             "intensity_modifier": intensity_modifier,
+            "plateau_penalty": plateau_penalty,
+            "neglect_penalty": neglect_penalty,
             "reasonability_modifier": reasonability_modifier,
             "habit_modifier": habit_modifier,
             "autonomy_modifier": autonomy_modifier,
             "compliance_modifier": compliance_modifier,
-            "overintervention_penalty": overintervention_penalty,  # 新增
+            "overintervention_penalty": overintervention_penalty,
+            "in_plateau": in_plateau,
+            "max_intervention_level": max_intervention_level,
             "total_before_clamp": total_score,
             "final_score": final_score,
         }
@@ -2156,184 +2231,6 @@ class Scorer:
 
     # ==================== 累积健康分系统新增方法 ====================
 
-    @staticmethod
-    def calculate_mood_score_with_discipline(
-        manager_actions: List[Dict],
-        day: int,
-        discipline_level: str,
-        health_score: float,
-        cumulative_health: Optional[Dict] = None,
-        habit_streak: int = 0,
-        compliance_rate: float = 0.5
-    ) -> Tuple[float, Dict]:
-        """
-        计算心情分（考虑自律程度和干预合理性）
-
-        核心设计理念（基于会议 2026-01-23）：
-        1. 自律程度影响情绪敏感度
-        2. 在平台期被管会产生"天天跟防贼一样"的不满
-        3. 健康分低时不被管会焦虑
-        4. 考虑干预的合理性（该管的时候管，不该管的时候不管）
-
-        Args:
-            manager_actions: 管理者当日干预动作列表
-            day: 当前天数
-            discipline_level: 自律程度 (high/medium/low)
-            health_score: 当日健康分（累积模式下是当前累积分）
-            cumulative_health: 累积健康分状态 (可选)
-            habit_streak: 连续自律天数
-            compliance_rate: 遵从率
-
-        Returns:
-            Tuple[float, Dict]: (心情分1-10, 详细分解)
-        """
-        BASE_SCORE = get_path("simulation.mood.base_score", default=6.0)
-
-        # 获取自律程度参数（mood_sensitivity 来自 mechanism config / 默认三档）
-        try:
-            disc_level = SelfDisciplineLevel(discipline_level.lower())
-        except ValueError:
-            disc_level = SelfDisciplineLevel.MEDIUM
-        _mood_sens_defaults = {"high": 0.7, "medium": 1.0, "low": 1.5}
-        mood_sensitivity = get_path(
-            f"simulation.health.discipline_params.{disc_level.value}.mood_sensitivity",
-            default=_mood_sens_defaults.get(disc_level.value, 1.0),
-        )
-
-        breakdown = {
-            "base_score": BASE_SCORE,
-            "discipline_level": discipline_level,
-            "mood_sensitivity": mood_sensitivity,
-        }
-
-        freq_cfg = get_path("simulation.mood.frequency_penalty", default=None) or {}
-        freq_per = freq_cfg.get("per_intervention", -0.5)
-        freq_floor = freq_cfg.get("floor", -3.0)
-
-        # 1. 干预频率影响（自律程度越高越不喜欢被频繁干预）
-        intervention_count = len(manager_actions) if manager_actions else 0
-        frequency_penalty = freq_per * intervention_count * mood_sensitivity
-        frequency_penalty = max(freq_floor, frequency_penalty)
-        breakdown["frequency_modifier"] = frequency_penalty
-
-        # 2. 干预强度影响
-        intensity_cfg = get_path("simulation.mood.intensity_penalty", default=None) or {}
-        intensity_penalty = 0.0
-        max_level = 0
-        if manager_actions:
-            for action in manager_actions:
-                level = action.get("level", 0)
-                max_level = max(max_level, level)
-                if level == 1:
-                    intensity_penalty += intensity_cfg.get("level_1", -0.3) * mood_sensitivity
-                elif level == 2:
-                    intensity_penalty += intensity_cfg.get("level_2", -0.6) * mood_sensitivity
-                elif level >= 3:
-                    intensity_penalty += intensity_cfg.get("level_3", -1.0) * mood_sensitivity
-        breakdown["intensity_modifier"] = intensity_penalty
-        breakdown["max_intervention_level"] = max_level
-
-        # 3. 平台期被管的额外惩罚（"天天跟防贼一样"）
-        plateau_cfg = get_path("simulation.mood.plateau_penalty", default=None) or {}
-        plateau_min_level = plateau_cfg.get("min_level", 2)
-        plateau_amount = plateau_cfg.get("amount", -1.5)
-        plateau_penalty = 0.0
-        in_plateau = False
-        if cumulative_health:
-            in_plateau = cumulative_health.get("in_plateau", False)
-            if in_plateau and max_level >= plateau_min_level:
-                # 在平台期被强管会非常不满
-                plateau_penalty = plateau_amount * mood_sensitivity
-                breakdown["plateau_strict_management"] = True
-        breakdown["plateau_penalty"] = plateau_penalty
-
-        # 4. 健康分低时不被管的焦虑
-        neglect_cfg = get_path("simulation.mood.neglect_penalty", default=None) or {}
-        health_lt = neglect_cfg.get("health_lt", 50)
-        when_no = neglect_cfg.get("when_no_intervention", -1.0)
-        health_danger_lt = neglect_cfg.get("health_danger_lt", 40)
-        when_weak = neglect_cfg.get("when_weak_intervention", -0.5)
-        neglect_penalty = 0.0
-        if health_score < health_lt and intervention_count == 0:
-            # 健康分很低但没人管，会焦虑
-            neglect_penalty = when_no * mood_sensitivity
-            breakdown["neglected_when_low"] = True
-        elif health_score < health_danger_lt and max_level < 2:
-            # 健康分危险但干预力度不够
-            neglect_penalty = when_weak * mood_sensitivity
-        breakdown["neglect_penalty"] = neglect_penalty
-
-        # 5. 干预合理性奖励
-        reasonability_map = Scorer._intervention_reasonability()
-        reasonability_bonus = 0.0
-        for action in (manager_actions or []):
-            reasonability = action.get("reasonability", "preventive")
-            if reasonability == "reasonable":
-                reasonability_bonus += reasonability_map.get("reasonable", 0.5)
-            elif reasonability == "unnecessary":
-                reasonability_bonus += reasonability_map.get("unnecessary", -0.5) * mood_sensitivity
-        breakdown["reasonability_modifier"] = reasonability_bonus
-
-        # 6. 习惯养成的正面影响
-        habit_thresholds = get_path(
-            "simulation.mood.habit_bonus_thresholds",
-            default=None,
-        ) or {"14": 1.5, "7": 1.0, "3": 0.5}
-        habit_bonus = 0.0
-        for threshold in sorted((int(k) for k in habit_thresholds.keys()), reverse=True):
-            if habit_streak >= threshold:
-                habit_bonus = habit_thresholds.get(str(threshold), habit_thresholds.get(threshold, 0))
-                break
-        breakdown["habit_bonus"] = habit_bonus
-
-        # 7. 遵从率影响
-        compliance_modifier = (compliance_rate - 0.5) * 1.0
-        breakdown["compliance_modifier"] = compliance_modifier
-
-        # 汇总计算
-        total_score = (
-            BASE_SCORE
-            + frequency_penalty
-            + intensity_penalty
-            + plateau_penalty
-            + neglect_penalty
-            + reasonability_bonus
-            + habit_bonus
-            + compliance_modifier
-        )
-
-        # 限制在1-10范围内
-        final_score = max(1.0, min(10.0, total_score))
-        breakdown["total_before_clamp"] = total_score
-        breakdown["final_score"] = final_score
-
-        return final_score, breakdown
-
-    @staticmethod
-    def get_mood_description(score: float, discipline_level: str) -> Tuple[str, str]:
-        """
-        根据心情分和自律程度返回描述
-
-        Args:
-            score: 心情分 (1-10)
-            discipline_level: 自律程度
-
-        Returns:
-            Tuple[str, str]: (评级, 描述)
-        """
-        if score >= 8.5:
-            return "非常满意", "感觉被尊重和信任，管理方式恰到好处"
-        elif score >= 7.0:
-            return "满意", "总体认可管理方式，偶有小意见"
-        elif score >= 5.5:
-            return "一般", "对管理有一定意见，但可以接受"
-        elif score >= 4.0:
-            if discipline_level == "high":
-                return "不太满意", "感觉被过度管控，希望有更多自主权"
-            else:
-                return "不太满意", "觉得管理要么太严要么太松"
-        else:
-            if discipline_level == "high":
-                return "不满意", "强烈感觉不被信任，像被当贼一样防着"
-            else:
-                return "不满意", "对管理方式有较大抵触情绪"
+    # 注：原 calculate_mood_score_with_discipline / get_mood_description 已并入
+    # calculate_satisfaction_score，不再单独输出心情分。所有主观评分由
+    # calculate_satisfaction_score 统一给出。

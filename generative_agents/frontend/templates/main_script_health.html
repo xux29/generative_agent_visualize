@@ -19,7 +19,10 @@
     const conversation_data = all_movement["conversation"] || {};
     const description_data = all_movement["description"] || {};
     const dailyHealthScores = {{ daily_health_scores|default([])|tojson }};
-    const dailyEmotionScores = {{ daily_emotion_scores|default([])|tojson }};
+    // 新字段名优先，回退旧字段名（兼容历史压缩数据）
+    const dailyEmotionScores = ({{ daily_satisfaction_scores|default([])|tojson }}).length
+        ? {{ daily_satisfaction_scores|default([])|tojson }}
+        : {{ daily_emotion_scores|default([])|tojson }};
     const staticMarkers = {{ static_markers|default({})|tojson }};
 
     let datetime_options = { weekday: "long", year: "numeric", month: "long", day: "numeric" };

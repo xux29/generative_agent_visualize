@@ -211,6 +211,7 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
     # Load daily scores from simulation_state.json if available
     daily_health_scores = []
     daily_emotion_scores = []
+    daily_satisfaction_scores = []
     state_file = Path(checkpoints_folder).parent / "simulation_state.json"
     if state_file.exists():
         try:
@@ -219,12 +220,15 @@ def generate_movement_health(checkpoints_folder, compressed_folder, compressed_f
             daily_logs = state_data.get("daily_logs", [])
             for log in daily_logs:
                 daily_health_scores.append(log.get("health_score"))
-                daily_emotion_scores.append(log.get("emotion_score"))
+                sat = log.get("satisfaction_score", log.get("emotion_score"))
+                daily_emotion_scores.append(sat)
+                daily_satisfaction_scores.append(sat)
         except Exception as e:
             print(f"Warning: failed to load daily scores from {state_file}: {e}")
 
     result["daily_health_scores"] = daily_health_scores
     result["daily_emotion_scores"] = daily_emotion_scores
+    result["daily_satisfaction_scores"] = daily_satisfaction_scores
 
     last_location = {}
 
