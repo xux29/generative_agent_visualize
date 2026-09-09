@@ -1,0 +1,164 @@
+{
+  "meta": {
+    "description": "Health mechanism registry: maps logical mechanisms to code + config paths",
+    "authority_doc": "docs/界面可调参数.md",
+    "note": "AI 仅可修改权威文档内机制对应文件；禁止新增/删除机制。agent_mixin 仅允许改复发/违规概率相关函数。文档外机制保留实现但不开放专家/AI 提取编辑。",
+    "editable_code_roots": [
+      "modules/health_mechanisms/scoring/nonlinear.py",
+      "modules/health_mechanisms/management/strategy.py",
+      "modules/health_mechanisms/agent_mixin.py"
+    ],
+    "config_root": "data/mechanism/"
+  },
+  "mechanisms": {
+    "health_score": {
+      "title": "健康分演算",
+      "doc_section": "1.1 健康分演算",
+      "implementation": "modules.health_mechanisms.scoring.nonlinear.NonlinearHealthScorer",
+      "config_path": "simulation.health",
+      "prompts": [],
+      "editable_by_ai": true,
+      "allowed_edit_scope": "修改 NonlinearHealthScorer / 健康分公式与日更新逻辑；禁止新增并列评分体系"
+    },
+    "satisfaction": {
+      "title": "满意度计算规则",
+      "doc_section": "2.3 满意度计算规则",
+      "implementation": "modules.health_mechanisms.scoring.nonlinear.Scorer.calculate_satisfaction_score",
+      "config_path": "simulation.satisfaction",
+      "prompts": [],
+      "editable_by_ai": true,
+      "allowed_edit_scope": "修改满意度公式；禁止删除满意度计算或改写无关评分入口"
+    },
+    "relapse": {
+      "title": "违规概率机制",
+      "doc_section": "1.2 违规概率机制",
+      "implementation": "modules.health_mechanisms.agent_mixin.HealthAgentMixin.calculate_relapse_probability",
+      "config_path": "simulation.relapse",
+      "prompts": [],
+      "editable_by_ai": true,
+      "allowed_edit_scope": "仅修改 calculate_relapse_probability 及直接辅助函数；禁止改意图/劝说/干预执行等其它 mixin 方法"
+    },
+    "management": {
+      "title": "管理机制与长期关系阶段",
+      "doc_section": "二、管理机制 / 2.4 长期关系阶段",
+      "implementation": "modules.health_mechanisms.management.strategy.LongTermStrategyManager",
+      "config_path": "management",
+      "prompts": [],
+      "editable_by_ai": true,
+      "allowed_edit_scope": "修改干预强度/倾向/阈值与 PHASE_CONFIG 阶段逻辑；禁止新增/删除关系阶段枚举或整段拆除管理器"
+    },
+    "health_score_linear": {
+      "title": "健康分（线性兼容）",
+      "implementation": "modules.health_mechanisms.scoring.linear.CumulativeHealthScorer",
+      "config_path": "simulation.health",
+      "prompts": [],
+      "editable_by_ai": false,
+      "note": "不在 docs/界面可调参数.md；不开放专家/AI 提取编辑"
+    },
+    "mood": {
+      "title": "情绪分",
+      "implementation": "modules.health_mechanisms.scoring.nonlinear.Scorer.calculate_mood_score_with_discipline",
+      "config_path": "simulation.mood",
+      "prompts": [],
+      "editable_by_ai": false,
+      "note": "不在 docs/界面可调参数.md；不开放专家/AI 提取编辑"
+    },
+    "habit": {
+      "title": "习惯 streak / 倾向",
+      "implementation": "modules.health_mechanisms.agent_mixin.HealthAgentMixin.update_habit_streak",
+      "config_path": "simulation.habit",
+      "prompts": [],
+      "editable_by_ai": false,
+      "note": "不在文档机制分区；habitProtection 旋钮属违规概率参数，改代码请走 relapse"
+    },
+    "compliance": {
+      "title": "劝说服从 / 抵抗",
+      "implementation": "modules.health_mechanisms.agent_mixin.HealthAgentMixin.react_to_persuasion",
+      "config_path": "simulation.compliance",
+      "prompts": [
+        "health_generate_persuasion",
+        "health_react_persuasion"
+      ],
+      "editable_by_ai": false,
+      "note": "不在 docs/界面可调参数.md；不开放专家/AI 提取编辑"
+    },
+    "intention": {
+      "title": "意图生成",
+      "implementation": "modules.health_mechanisms.agent_mixin.HealthAgentMixin.generate_intention",
+      "config_path": "simulation.subject",
+      "prompts": [
+        "health_generate_intention",
+        "health_generate_intention_batch"
+      ],
+      "editable_by_ai": false,
+      "note": "不在 docs/界面可调参数.md；不开放专家/AI 提取编辑"
+    },
+    "violation": {
+      "title": "违规判定 / 睡眠意图归一 / 日终未阻止计数",
+      "implementation": "modules.health_mechanisms.rules.violation",
+      "config_path": null,
+      "prompts": [],
+      "editable_by_ai": false,
+      "note": "不在 docs/界面可调参数.md；不开放专家/AI 提取编辑"
+    },
+    "env_block": {
+      "title": "环境阻止（锁厨/移食/收手机）",
+      "implementation": "modules.health_mechanisms.rules.env_block",
+      "config_path": null,
+      "prompts": [],
+      "editable_by_ai": false,
+      "note": "不在 docs/界面可调参数.md；不开放专家/AI 提取编辑"
+    },
+    "turnaround": {
+      "title": "折返独白与当日干预降级",
+      "implementation": "modules.health_mechanisms.rules.turnaround",
+      "config_path": null,
+      "prompts": [
+        "health_generate_turnaround"
+      ],
+      "editable_by_ai": false,
+      "note": "不在 docs/界面可调参数.md；不开放专家/AI 提取编辑"
+    },
+    "intervention_execute": {
+      "title": "干预执行",
+      "implementation": "modules.health_mechanisms.agent_mixin.HealthAgentMixin.execute_intervention",
+      "config_path": "management.intervention",
+      "prompts": [],
+      "editable_by_ai": false,
+      "note": "不在文档可改机制面；干预松紧请改 management / 界面旋钮"
+    },
+    "asymmetric_game": {
+      "title": "信息不对称博弈",
+      "implementation": "modules.health_mechanisms.asymmetric_game.AsymmetricGameEngine",
+      "config_path": null,
+      "prompts": [],
+      "editable_by_ai": false,
+      "note": "不在 docs/界面可调参数.md；不开放专家/AI 提取编辑"
+    },
+    "scenario": {
+      "title": "场景语义配置",
+      "implementation": "modules.health_mechanisms.scenario.ScenarioConfig",
+      "config_path": null,
+      "data_file": "data/semantic_mapping.json",
+      "prompts": [],
+      "editable_by_ai": false,
+      "note": "不在 docs/界面可调参数.md；不开放专家/AI 提取编辑"
+    },
+    "behavior_scores": {
+      "title": "行为分项表",
+      "implementation": "modules.health_mechanisms.scoring.nonlinear.Scorer",
+      "config_path": "simulation.behavior_scores",
+      "prompts": [],
+      "editable_by_ai": false,
+      "note": "不在 docs/界面可调参数.md；不开放专家/AI 提取编辑"
+    },
+    "composite": {
+      "title": "综合评估",
+      "implementation": "modules.health_mechanisms.scoring.nonlinear.Scorer.calculate_composite_score",
+      "config_path": "simulation.composite",
+      "prompts": [],
+      "editable_by_ai": false,
+      "note": "不在 docs/界面可调参数.md；不开放专家/AI 提取编辑"
+    }
+  }
+}

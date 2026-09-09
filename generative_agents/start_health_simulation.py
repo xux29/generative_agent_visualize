@@ -32,18 +32,33 @@ from dotenv import load_dotenv, find_dotenv
 
 from modules.game import create_game, get_game
 from modules import utils
-from modules.scenario_config import get_scenario_config
-from modules.scorer_nonlinear import (
+from modules.health_mechanisms.scenario import get_scenario_config
+from modules.health_mechanisms.scoring.nonlinear import (
     NonlinearHealthScorer,
     Scorer,
     SelfDisciplineLevel,
     InitialHealthScore,
 )
 # 线性 CumulativeHealthScorer 仅用于兼容旧 checkpoint；主路径为非线性
-from modules.scorer import CumulativeHealthScorer
-from modules.strategy import Strategy, StrategyManager, LongTermStrategyManager
-from modules.asymmetric_game import AsymmetricGameEngine, ManagerGoalType
-from modules.intention import Intention
+from modules.health_mechanisms.scoring.linear import CumulativeHealthScorer
+from modules.health_mechanisms.management.strategy import (
+    Strategy,
+    StrategyManager,
+    LongTermStrategyManager,
+)
+from modules.health_mechanisms.asymmetric_game import AsymmetricGameEngine, ManagerGoalType
+from modules.health_mechanisms.intention import Intention
+from modules.health_mechanisms.rules import (
+    adjust_intervention_for_day,
+    check_env_blocked,
+    count_unblocked_violations,
+    generate_turnaround,
+    is_sleep_activity,
+    is_violation_intention,
+    normalize_display_log,
+    normalize_sleep_intention,
+    turnaround_template,
+)
 from modules.mechanism_config import (
     MECHANISM_DATA_DIR,
     get_mechanism_config,
@@ -106,7 +121,8 @@ class HealthSimulation:
                  initial_health: int = 75,
                  discipline_level: str = "medium",
                  resume_mode: bool = False,
-                 scoring_mode: str = "nonlinear"):
+                 scoring_mode: str = "nonlinear",
+                 management_enabled: bool = True):
         """初始化健康模拟
 
         Args:
@@ -121,7 +137,9 @@ class HealthSimulation:
             resume_mode: 是否为恢复模式（True时查找最新运行目录，而非创建新目录）
             scoring_mode: 评分模式（linear/nonlinear）
         """
+        load_dotenv(find_dotenv())
         self.scenario_name = scenario_name
+        self.management_enabled = management_enabled
         self.days = days
         self.verbose = verbose
         self.static_root = static_root
@@ -408,7 +426,7 @@ class HealthSimulation:
                 target_personality = "rebellious"
 
             # 重新初始化博弈引擎以使用正确的性格
-            from modules.asymmetric_game import AsymmetricGameEngine
+            from modules.health_mechanisms.asymmetric_game import AsymmetricGameEngine
             self.asymmetric_game = AsymmetricGameEngine(
                 scenario=self.asymmetric_game.manager_mind.scenario,
                 target_personality=target_personality
@@ -769,7 +787,7 @@ class HealthSimulation:
             # V3: 被管理者可能试探边界（信息不对称：被管者不知道管理者的真实策略）
             is_testing_boundary = False
             boundary_test_monologue = ""
-            if intention:
+            if intention and self.management_enabled:
                 # 让被管理者根据其感知决定是否试探边界
                 final_behavior, monologue, is_testing = self.asymmetric_game.managed_mind.decide_behavior(
                     day=day,
@@ -840,6 +858,7 @@ class HealthSimulation:
                         "agent": self.target_name,
                         "content": intention.activity,
                         "inner_monologue": intention.inner_monologue,
+                        "compliance_threshold": intention.compliance_threshold,
                         "target_location": target_location,
                         "blocked": True,
                         "blocked_location": blocked_location,
@@ -904,6 +923,7 @@ class HealthSimulation:
                         "agent": self.target_name,
                         "content": intention.activity,
                         "inner_monologue": intention.inner_monologue,
+                        "compliance_threshold": intention.compliance_threshold,
                         "target_location": target_location,
                         "blocked": False
                     })
@@ -922,7 +942,7 @@ class HealthSimulation:
             env_state_next = dict(env_state)
             intervention_success = True
             strategy_downgraded = False
-            if not sleep_stop and hasattr(self.manager_agent, 'evaluate_strategy'):
+            if self.management_enabled and not sleep_stop and hasattr(self.manager_agent, 'evaluate_strategy'):
                 strategy = self.manager_agent.evaluate_strategy(intention, self.target_agent)
 
                 # V3: 管理者的隐藏策略影响干预级别（管理者内部决策，被管者不知道）
@@ -1090,6 +1110,7 @@ class HealthSimulation:
                 "type": "intention",
                 "agent": self.target_name,
                 "content": forced_intention.activity,
+                "execution_source": "forced_02_00",
                 "inner_monologue": forced_intention.inner_monologue,
                 "target_location": "bedroom"
             })
@@ -1108,23 +1129,23 @@ class HealthSimulation:
         day_log["agents"][self.target_name] = target_data
 
         # 【累积健康分系统】计算每日变化
-        # 检测是否有违规行为（按场景限定）
-        snacking_violations = target_data.get("snacking_count", 0)
-        phone_violation = 1 if target_data.get("phone_duration_before_sleep", 0) > 60 else 0
-        is_phone_scenario = "phone" in self.scenario_name or "手机" in self.scenario_name
-        if is_phone_scenario:
-            unblocked_violation_count = phone_violation
-        else:
-            unblocked_violation_count = snacking_violations
-        had_violation = unblocked_violation_count > 0
+        # 检测是否有违规行为（按场景限定；机制：rules.violation.count_unblocked_violations）
+        unblocked_violation_count, had_violation = count_unblocked_violations(
+            self.scenario_name, target_data
+        )
         day_log["unblocked_violation_count"] = unblocked_violation_count
         day_log["had_violation"] = had_violation
+        normalize_display_log(day_log, self._is_violation_intention)
         intervention_count = len(day_log.get("interventions", []))
         intervention_success = sum(
             1 for inv in day_log.get("interventions", [])
             if inv.get("succeeded", True)
         ) > 0 if intervention_count > 0 else True
 
+        if target_data.get("timing_observed"):
+            unblocked_violation_count = target_data["actual_violation_count"]
+            had_violation = unblocked_violation_count > 0
+            day_log.update(unblocked_violation_count=unblocked_violation_count, had_violation=had_violation)
         # 计算累积健康分变化
         health_change, health_breakdown = self.cumulative_health_scorer.calculate_daily_change(
             agent_data=target_data,
@@ -1165,7 +1186,7 @@ class HealthSimulation:
 
         # V3: 更新管理者内心状态（每天结束后的"内部反思"）
         total_interventions_today = len(day_log.get("interventions", []))
-        was_compliant_today = health_score >= 6
+        was_compliant_today = not had_violation
         resisted_today = any(
             not inv.get("succeeded", True)
             for inv in day_log.get("interventions", [])
@@ -1198,52 +1219,47 @@ class HealthSimulation:
         successful_interventions = sum(1 for a in manager_actions if a.get("reasonability") == "reasonable")
         compliance_rate = successful_interventions / intervention_count if intervention_count > 0 else 0.5
 
-        # 调用Scorer计算满意度（合并后的统一主观评分，含原心情分的 Π / N / σ_m 修正）
+        # 调用Scorer计算情绪分（使用自律程度感知的新方法）
         cumulative_state = self.cumulative_health_scorer.get_summary()
-        satisfaction_score, satisfaction_breakdown = Scorer.calculate_satisfaction_score(
+        emotion_score, emotion_breakdown = Scorer.calculate_mood_score_with_discipline(
             manager_actions=manager_actions,
             day=day,
-            habit_streak=habit_streak,
-            compliance_rate=compliance_rate,
-            health_score=health_score,
             discipline_level=self.discipline_level,
+            health_score=health_score,
             cumulative_health=cumulative_state,
+            habit_streak=habit_streak,
+            compliance_rate=compliance_rate
         )
 
-        day_log["satisfaction_score"] = round(satisfaction_score, 1)
-        day_log["satisfaction_breakdown"] = satisfaction_breakdown
-        # 向后兼容：旧脚本仍读取 emotion_score 别名
-        day_log["emotion_score"] = day_log["satisfaction_score"]
-        day_log["emotion_breakdown"] = satisfaction_breakdown
+        day_log["emotion_score"] = round(emotion_score, 1)
+        day_log["emotion_breakdown"] = emotion_breakdown
         self.logger.info(
-            f"Day {day} Satisfaction Score: {satisfaction_score:.1f}/10 "
+            f"Day {day} Mood Score: {emotion_score:.1f}/10 "
             f"(discipline: {self.discipline_level}, "
             f"tide: {cumulative_state['tide_phase']})"
         )
 
-        # v2新增：设置满意度上下文供策略管理器使用
+        # v2新增：设置情绪上下文供策略管理器使用
         if hasattr(self.strategy_manager, 'set_emotion_context'):
-            self.strategy_manager.set_emotion_context(satisfaction_score, day)
-        if hasattr(self.strategy_manager, 'set_satisfaction_context'):
-            self.strategy_manager.set_satisfaction_context(satisfaction_score, day)
+            self.strategy_manager.set_emotion_context(emotion_score, day)
 
         # 更新策略管理器状态（潮汐性动态调整 + 长期机制）
         intervention_count = len(day_log.get("interventions", []))
 
         # 判断今天是否主动遵守（无干预时仍然良好）
         high_level_interventions = sum(1 for inv in day_log.get("interventions", []) if inv.get("level", 0) >= 2)
-        was_proactive = health_score >= 6 and high_level_interventions == 0
+        was_proactive = not had_violation and high_level_interventions == 0
 
-        # 判断满意度是否积极（基于满意度分）
-        emotion_positive = satisfaction_score >= 5.0 if satisfaction_score else None
+        # 判断情绪是否积极（基于情绪分）
+        emotion_positive = emotion_score >= 5.0 if emotion_score else None
 
         # 判断是否抵抗干预（有干预但不遵从）
         failed_interventions = sum(1 for inv in day_log.get("interventions", []) if not inv.get("succeeded", True))
         resisted_intervention = failed_interventions > 0 and intervention_count > 0
 
-        # 判断是否发生冲突（高级干预多次 + 满意度低落，或明显对抗）
+        # 判断是否发生冲突（高级干预多次 + 情绪低落，或明显对抗）
         had_conflict = (
-            (high_level_interventions >= 2 and satisfaction_score and satisfaction_score < 4.0) or
+            (high_level_interventions >= 2 and emotion_score and emotion_score < 4.0) or
             (failed_interventions >= 2) or
             any(inv.get("had_conflict", False) for inv in day_log.get("interventions", []))
         )
@@ -1331,12 +1347,18 @@ class HealthSimulation:
             self.target_agent.update_habit_streak(is_good_today)
 
         # Manager reflection (if available)
-        if hasattr(self.manager_agent, 'daily_reflection'):
+        if self.management_enabled and hasattr(self.manager_agent, 'daily_reflection'):
             reflection = self.manager_agent.daily_reflection(day, day_log)
             day_log["reflection"] = reflection
             if isinstance(reflection, dict):
                 self.logger.info(f"Day {day} Reflection: {reflection.get('today_summary', '')}")
 
+        # Derived metrics are saved beside the actual events, never fabricated
+        # later by the frontend exporter. The rate is empirical, not an LLM probability.
+        from modules.health_mechanisms.scoring.observed_metrics import observed_metrics
+        day_log["observed_metrics"] = observed_metrics(
+            day_log, get_mechanism_config(), self.management_enabled
+        )
         # Save daily log
         self.daily_logs.append(day_log)
         self._save_daily_log(day, day_log)
@@ -1521,6 +1543,7 @@ class HealthSimulation:
                         "agent": self.target_name,
                         "content": intention.activity,
                         "inner_monologue": intention.inner_monologue,
+                        "compliance_threshold": intention.compliance_threshold,
                         "target_location": target_location,
                         "blocked": True,
                         "blocked_location": blocked_location,
@@ -1585,6 +1608,7 @@ class HealthSimulation:
                         "agent": self.target_name,
                         "content": intention.activity,
                         "inner_monologue": intention.inner_monologue,
+                        "compliance_threshold": intention.compliance_threshold,
                         "target_location": target_location,
                         "blocked": False
                     })
@@ -1688,7 +1712,19 @@ class HealthSimulation:
                 # Locking done; manager leaves the area
                 self._move_agent_to_location(self.manager_agent, "living_room")
 
+            # 对齐计时器到当前时间槽，写入回放 checkpoint（batch 原先漏写）
+            try:
+                hh, mm = [int(x) for x in time_str.split(":")[:2]]
+                timer.set_time_of_day(hh, mm, 0)
+            except Exception:
+                pass
             self.step_counter += 1
+            self._save_checkpoint(
+                timer.get_date(),
+                intention,
+                strategy,
+                env_state=dict(env_state),
+            )
 
             if sleep_stop:
                 intentions = intentions[: i + 1]
@@ -1715,6 +1751,7 @@ class HealthSimulation:
                 "type": "intention",
                 "agent": self.target_name,
                 "content": forced_intention.activity,
+                "execution_source": "forced_02_00",
                 "inner_monologue": forced_intention.inner_monologue,
                 "target_location": "bedroom"
             })
@@ -1724,6 +1761,18 @@ class HealthSimulation:
                 "location": "bedroom",
                 "status": "arrived"
             })
+            try:
+                fhh, fmm = [int(x) for x in forced_time_str.split(":")[:2]]
+                timer.set_time_of_day(fhh, fmm, 0)
+            except Exception:
+                pass
+            self._move_agent_to_location(self.target_agent, "bedroom")
+            self._save_checkpoint(
+                timer.get_date(),
+                forced_intention,
+                Strategy.observe("强制睡觉"),
+                env_state=dict(env_state),
+            )
 
         # Step 4: 计算分数和更新状态（使用累积健康分系统）
         target_data = self._collect_target_data(day_log)
@@ -1756,6 +1805,7 @@ class HealthSimulation:
         had_violation = unblocked_violations > 0
         day_log["unblocked_violation_count"] = unblocked_violations
         day_log["had_violation"] = had_violation
+        normalize_display_log(day_log, self._is_violation_intention)
 
         inv_levels = [inv.get("level", 0) for inv in day_log.get("interventions", [])]
         self.logger.info(
@@ -1768,6 +1818,11 @@ class HealthSimulation:
         # 如果有干预且阻止了所有违规 → intervention_success = True
         batch_intervention_success = (unblocked_violations == 0) if batch_intervention_count > 0 else True
 
+        if target_data.get("timing_observed"):
+            unblocked_violations = target_data["actual_violation_count"]
+            had_violation = unblocked_violations > 0
+            day_log.update(unblocked_violation_count=unblocked_violations, had_violation=had_violation)
+            batch_intervention_success = any(inv.get("succeeded", False) for inv in real_interventions)
         health_change, health_breakdown = self.cumulative_health_scorer.calculate_daily_change(
             agent_data=target_data,
             had_violation=had_violation,
@@ -1799,7 +1854,7 @@ class HealthSimulation:
 
         # V3: 更新管理者内心状态（批量模式）
         batch_interventions = len(day_log.get("interventions", []))
-        batch_compliant = health_score >= 6
+        batch_compliant = not had_violation
         batch_resisted = any(
             not inv.get("succeeded", True)
             for inv in day_log.get("interventions", [])
@@ -1820,8 +1875,8 @@ class HealthSimulation:
                 was_successful=inv.get("succeeded", True)
             )
 
-        # 计算满意度（合并后的统一主观评分，含原心情分的 Π / N / σ_m 修正）
-        # 只统计真正干预的（level > 0），level=0表示"观察/不干预"不应影响满意度
+        # 计算情绪分（使用自律程度感知的新方法）
+        # 只统计真正干预的（level > 0），level=0表示"观察/不干预"不应影响情绪
         manager_actions = [inv for inv in day_log.get("interventions", []) if inv.get("level", 0) > 0]
         intervention_count = len(manager_actions)
         habit_streak = getattr(self.target_agent, 'habit_streak', 0)
@@ -1829,40 +1884,35 @@ class HealthSimulation:
         compliance_rate = successful_interventions / intervention_count if intervention_count > 0 else 0.5
 
         cumulative_state = self.cumulative_health_scorer.get_summary()
-        satisfaction_score, satisfaction_breakdown = Scorer.calculate_satisfaction_score(
+        emotion_score, emotion_breakdown = Scorer.calculate_mood_score_with_discipline(
             manager_actions=manager_actions,
             day=day,
-            habit_streak=habit_streak,
-            compliance_rate=compliance_rate,
-            health_score=health_score,
             discipline_level=self.discipline_level,
+            health_score=health_score,
             cumulative_health=cumulative_state,
+            habit_streak=habit_streak,
+            compliance_rate=compliance_rate
         )
 
-        day_log["satisfaction_score"] = round(satisfaction_score, 1)
-        day_log["satisfaction_breakdown"] = satisfaction_breakdown
-        # 向后兼容：旧脚本仍读取 emotion_score 别名
-        day_log["emotion_score"] = day_log["satisfaction_score"]
-        day_log["emotion_breakdown"] = satisfaction_breakdown
+        day_log["emotion_score"] = round(emotion_score, 1)
+        day_log["emotion_breakdown"] = emotion_breakdown
         self.logger.info(
-            f"Day {day} Satisfaction Score: {satisfaction_score:.1f}/10 "
+            f"Day {day} Mood Score: {emotion_score:.1f}/10 "
             f"(discipline: {self.discipline_level})"
         )
 
-        # v2新增：设置满意度上下文供策略管理器使用
+        # v2新增：设置情绪上下文供策略管理器使用
         if hasattr(self.strategy_manager, 'set_emotion_context'):
-            self.strategy_manager.set_emotion_context(satisfaction_score, day)
-        if hasattr(self.strategy_manager, 'set_satisfaction_context'):
-            self.strategy_manager.set_satisfaction_context(satisfaction_score, day)
+            self.strategy_manager.set_emotion_context(emotion_score, day)
 
         # 更新策略管理器
         high_level_interventions = sum(1 for inv in day_log.get("interventions", []) if inv.get("level", 0) >= 2)
-        was_proactive = health_score >= 6 and high_level_interventions == 0
-        emotion_positive = satisfaction_score >= 5.0 if satisfaction_score else None
+        was_proactive = not had_violation and high_level_interventions == 0
+        emotion_positive = emotion_score >= 5.0 if emotion_score else None
         failed_interventions = sum(1 for inv in day_log.get("interventions", []) if not inv.get("succeeded", True))
         resisted_intervention = failed_interventions > 0 and intervention_count > 0
         had_conflict = (
-            (high_level_interventions >= 2 and satisfaction_score and satisfaction_score < 4.0) or
+            (high_level_interventions >= 2 and emotion_score and emotion_score < 4.0) or
             (failed_interventions >= 2) or
             any(inv.get("had_conflict", False) for inv in day_log.get("interventions", []))
         )
@@ -2189,6 +2239,8 @@ class HealthSimulation:
 
             content = event.get("content", "").lower()
             time_str = event.get("time", "")
+            if any(word in content for word in ["睡觉", "入睡", "上床", "准备睡觉"]):
+                data["sleep_time"] = time_str
             matching_inv = interventions_by_time.get(time_str)
             if matching_inv and matching_inv.get("level", 0) > 0 and matching_inv.get("succeeded", True):
                 # 干预成功则不计入实际违规
@@ -2210,6 +2262,13 @@ class HealthSimulation:
                     data["snacking_type"] = "healthy"
                     data["night_food_type"] = "low_gi"
 
+        from modules.health_mechanisms.scoring.timing import collect_timing
+        timing = collect_timing(day_log, self.target_name, self.scenario_name, self._is_violation_intention)
+        data.update(timing)
+        data["sleep_time"] = timing["sleep_started_at"]
+        data["last_eating_time"] = timing["eating_times"][-1] if timing["eating_times"] else None
+        data["snacking_count"] = len(timing["eating_times"])
+        day_log["health_timing"] = timing
         return data
 
     # ============================================================================
@@ -2300,88 +2359,22 @@ class HealthSimulation:
         return None
 
     def _is_sleep_activity(self, intention) -> bool:
-        """判断意图是否睡眠相关"""
-        if not intention:
-            return False
-        if getattr(intention, "is_sleep_related", False):
-            return True
-        activity = getattr(intention, "activity", "") or ""
-        # 延迟睡眠的表达不等于睡觉
-        delay_keywords = ["晚睡", "晚点睡", "再睡", "先不睡", "不想睡"]
-        if any(kw in activity for kw in delay_keywords):
-            return False
-        sleep_keywords = ["睡觉", "去睡", "上床", "躺床", "准备睡觉", "洗漱", "晚安", "sleep", "bed"]
-        return any(kw in activity for kw in sleep_keywords)
+        """判断意图是否睡眠相关（机制：health_mechanisms.rules.violation）"""
+        return is_sleep_activity(intention)
 
     def _is_violation_intention(self, intention, target_location=None) -> bool:
-        """判断意图是否违规（基于内容/地点关键词，避免误判非违规活动）"""
-        if not intention:
-            return False
-        activity = getattr(intention, "activity", "") or ""
-        activity_lower = activity.lower()
-        if not target_location:
-            target_location = getattr(intention, "target_location", None) or self._infer_target_location(activity)
-
-        forbidden_foods = [f.lower() for f in getattr(self.scenario, "forbidden_foods", []) if f]
-        forbidden_activities = [a.lower() for a in getattr(self.scenario, "forbidden_activities", []) if a]
-
-        if any(word in activity_lower for word in forbidden_foods):
-            return True
-        if any(word in activity_lower for word in forbidden_activities):
-            return True
-
-        food_keywords = ["吃", "零食", "夜宵", "宵夜", "外卖", "甜食", "薯片", "蛋糕", "汉堡", "油炸", "可乐", "翻找", "偷吃"]
-        if target_location == "kitchen" and any(word in activity for word in food_keywords):
-            return True
-
-        phone_keywords = ["手机", "刷手机", "玩手机", "短视频", "游戏", "社交媒体", "上网"]
-        if target_location == "phone_area" or "phone" in self.scenario_name or "手机" in self.scenario_name:
-            if any(word in activity for word in phone_keywords):
-                return True
-
-        # 兜底：如果 compliance_threshold 很高且地点是高风险区域，也视为违规
-        if getattr(intention, "compliance_threshold", 0) >= 2 and target_location in {"kitchen", "phone_area"}:
-            return True
-
-        return False
+        """判断意图是否违规（机制：health_mechanisms.rules.violation）"""
+        return is_violation_intention(
+            intention,
+            self.scenario,
+            self.scenario_name,
+            target_location=target_location,
+            infer_location=self._infer_target_location,
+        )
 
     def _normalize_sleep_intention(self, intention, timer):
-        """纠正“晚睡一会儿”等不合理意图"""
-        if not intention:
-            return intention
-        activity = getattr(intention, "activity", "") or ""
-        delay_keywords = ["晚睡", "晚点睡", "再睡", "先不睡", "不想睡"]
-        if not any(kw in activity for kw in delay_keywords):
-            return intention
-
-        # 获取目标睡觉时间
-        target_sleep_time = "23:30"
-        if hasattr(self.scenario, "target_profile"):
-            target_sleep_time = self.scenario.target_profile.get("sleep_schedule", {}).get("target_sleep_time", target_sleep_time)
-        sleep_hour, sleep_minute = 23, 30
-        try:
-            sleep_hour, sleep_minute = [int(x) for x in target_sleep_time.split(":")]
-        except Exception:
-            pass
-
-        now = timer.get_date()
-        current_minutes = now.hour * 60 + now.minute
-        sleep_minutes = sleep_hour * 60 + sleep_minute
-
-        # 未到睡觉时间，改为放松
-        if current_minutes < sleep_minutes:
-            intention.activity = "看电视放松"
-            intention.inner_monologue = f"{intention.inner_monologue}（晚点再睡，先放松一下）"
-            intention.target_location = "living_room"
-            intention.is_sleep_related = False
-            return intention
-
-        # 已到睡觉时间，改为睡觉
-        intention.activity = "睡觉"
-        intention.inner_monologue = f"{intention.inner_monologue}（该睡觉了）"
-        intention.target_location = "bedroom"
-        intention.is_sleep_related = True
-        return intention
+        """纠正「晚睡一会儿」等不合理意图（机制：health_mechanisms.rules.violation）"""
+        return normalize_sleep_intention(intention, timer, self.scenario)
 
     def _get_bed_address(self):
         """优先获取卧室中的床地址"""
@@ -2434,22 +2427,8 @@ class HealthSimulation:
             return "kitchen"
         return None
     def _adjust_intervention_for_day(self, strategy, level2_used: bool, level3_used: bool):
-        """确保当天 L3/L4 不重复，允许 L1 劝说"""
-        if not strategy:
-            return strategy
-        # L4 执行后，当天不再需要 L3/L4
-        if level3_used and strategy.level >= 2:
-            strategy.level = 1
-            strategy.action = "persuade"
-            strategy.reason = f"{strategy.reason}（当天已执行过L4，降级为劝说）"
-            return strategy
-        # L3 不重复
-        if level2_used and strategy.level == 2:
-            strategy.level = 1
-            strategy.action = "persuade"
-            strategy.reason = f"{strategy.reason}（当天已执行过L3，降级为劝说）"
-            return strategy
-        return strategy
+        """确保当天 L3/L4 不重复（机制：health_mechanisms.rules.turnaround）"""
+        return adjust_intervention_for_day(strategy, level2_used, level3_used)
 
     def _normalize_strategy_action(self, strategy, intention=None):
         """确保策略动作与等级一致，保留原始动作"""
@@ -2478,117 +2457,31 @@ class HealthSimulation:
         return strategy
 
     def _check_env_blocked(self, target_location: str, env_state: dict) -> tuple:
-        """检查目标位置是否被环境状态阻止
-
-        Args:
-            target_location: 目标语义位置
-            env_state: 当前环境状态字典
-
-        Returns:
-            tuple: (is_blocked, block_reason, blocked_at_location)
-        """
-        if not target_location:
-            return False, None, None
-
-        if target_location == "kitchen" and env_state.get("kitchen_locked", False):
-            return True, "厨房门被锁了", "kitchen_door"
-
-        if target_location == "kitchen" and env_state.get("food_removed", False):
-            return True, "厨房里没有可吃的东西", "kitchen"
-
-        if target_location == "phone_area" and env_state.get("phone_removed", False):
-            return True, "手机已被没收", "phone_area"
-
-        return False, None, None
+        """检查目标位置是否被环境状态阻止（机制：health_mechanisms.rules.env_block）"""
+        return check_env_blocked(target_location, env_state)
 
     def _generate_turnaround(self, intention, target_location: str, block_reason: str, env_state: dict,
                              blocked_location: str = None) -> dict:
-        """生成折返独白和替代活动
-
-        Args:
-            intention: 原始意图
-            target_location: 被阻止的目标位置
-            block_reason: 阻止原因
-            env_state: 当前环境状态
-            blocked_location: 被阻止的具体位置（如"kitchen_door"）
-
-        Returns:
-            dict: 包含 turnaround_monologue, redirect_activity, redirect_location, emotional_reaction
-        """
-        # 获取环境约束描述
-        constraints = []
-        if env_state.get("kitchen_locked"):
-            constraints.append("厨房已被锁定")
-        if env_state.get("food_removed"):
-            constraints.append("厨房食物已被移除")
-        if env_state.get("phone_removed"):
-            constraints.append("手机已被没收")
-        env_constraints_str = "；".join(constraints) if constraints else "无"
-
-        # 获取位置描述
-        location_desc_map = {
-            "kitchen": "厨房",
-            "kitchen_door": "厨房门口",
-            "snacks_area": "零食柜",
-            "phone_area": "手机放置处",
-            "bedroom": "卧室",
-            "living_room": "客厅"
-        }
-        location_key = blocked_location or target_location
-        target_location_desc = location_desc_map.get(location_key, location_key)
-
-        try:
-            output = self.target_agent.completion(
-                "health_generate_turnaround",
-                original_activity=intention.activity,
-                target_location_desc=target_location_desc,
-                block_reason=block_reason,
-                environment_constraints=env_constraints_str,
-                self_discipline=getattr(self.target_agent, 'self_discipline', 'medium')
-            )
-
-            if isinstance(output, dict):
-                # 如果返回的是包含 res 的字典
-                if "res" in output:
-                    return output["res"]
-                return output
-            else:
-                # Fallback：使用模板
-                return self._turnaround_template(location_key, block_reason)
-
-        except Exception as e:
-            self.logger.warning(f"折返生成失败: {e}，使用模板")
-            return self._turnaround_template(location_key, block_reason)
+        """生成折返独白和替代活动（机制：health_mechanisms.rules.turnaround）"""
+        return generate_turnaround(
+            intention,
+            target_location,
+            block_reason,
+            env_state,
+            blocked_location=blocked_location,
+            manager_name=getattr(self, "manager_name", "管理者"),
+            self_discipline=getattr(self.target_agent, "self_discipline", "medium"),
+            completion_fn=self.target_agent.completion,
+            logger=self.logger,
+        )
 
     def _turnaround_template(self, target_location: str, block_reason: str) -> dict:
-        """折返模板（当LLM调用失败时使用）"""
-        templates = {
-            "kitchen_door": {
-                "turnaround_monologue": f"走到厨房门口发现{block_reason}，看来暂时进不去了。只能去客厅待会儿。",
-                "redirect_activity": "去客厅看电视",
-                "redirect_location": "living_room",
-                "emotional_reaction": "resigned"
-            },
-            "kitchen": {
-                "turnaround_monologue": f"到厨房想找点吃的，结果{block_reason}。估计是{self.manager_name}把食物拿走了，那就在厨房找找别的。",
-                "redirect_activity": "在厨房找其他食物",
-                "redirect_location": "kitchen",
-                "emotional_reaction": "frustrated"
-            },
-            "phone_area": {
-                "turnaround_monologue": f"想玩会儿手机，找了半天发现{block_reason}。肯定是{self.manager_name}把手机收走了，那就休息吧。",
-                "redirect_activity": "躺下休息",
-                "redirect_location": "bedroom",
-                "emotional_reaction": "resigned"
-            }
-        }
-
-        return templates.get(target_location, {
-            "turnaround_monologue": f"想做的事被阻止了：{block_reason}。算了，去客厅待着吧。",
-            "redirect_activity": "去客厅",
-            "redirect_location": "living_room",
-            "emotional_reaction": "resigned"
-        })
+        """折返模板（机制：health_mechanisms.rules.turnaround）"""
+        return turnaround_template(
+            target_location,
+            block_reason,
+            manager_name=getattr(self, "manager_name", "管理者"),
+        )
 
     def _add_minutes_to_time(self, time_str: str, minutes: int) -> str:
         """给时间字符串添加分钟数
@@ -2968,6 +2861,8 @@ class HealthSimulation:
             parallel_workers: Number of parallel workers (0=sequential, >0=parallel days)
         """
         start_day = 1
+        if not self.management_enabled and (batch_mode or parallel_workers):
+            raise ValueError("Unmanaged controls require the serial feedback loop")
 
         if resume:
             if self.load_simulation_state():
@@ -3046,11 +2941,8 @@ class HealthSimulation:
             "manager": self.manager_name,
             "total_days": self.days,
             "daily_health_scores": [],
-            "daily_satisfaction_scores": [],
-            # 向后兼容别名（旧字段名）
             "daily_emotion_scores": [],
             "average_health_score": 0,
-            "average_satisfaction_score": 0,
             "average_emotion_score": 0,
             "intervention_summary": {
                 "level_0": 0,
@@ -3061,19 +2953,14 @@ class HealthSimulation:
         }
 
         total_health_score = 0
-        total_satisfaction_score = 0
+        total_emotion_score = 0
         for log in self.daily_logs:
             health_score = log.get("health_score", 0)
-            # 新字段名优先，回退旧字段名（兼容历史 checkpoint）
-            satisfaction_score = log.get(
-                "satisfaction_score",
-                log.get("emotion_score", 5.0),
-            )
+            emotion_score = log.get("emotion_score", 5.0)
             report["daily_health_scores"].append(health_score)
-            report["daily_satisfaction_scores"].append(satisfaction_score)
-            report["daily_emotion_scores"].append(satisfaction_score)
+            report["daily_emotion_scores"].append(emotion_score)
             total_health_score += health_score
-            total_satisfaction_score += satisfaction_score
+            total_emotion_score += emotion_score
 
             for intervention in log.get("interventions", []):
                 level = intervention.get("level", 0)
@@ -3081,8 +2968,7 @@ class HealthSimulation:
                     report["intervention_summary"][f"level_{level}"] += 1
 
         report["average_health_score"] = total_health_score / len(self.daily_logs) if self.daily_logs else 0
-        report["average_satisfaction_score"] = total_satisfaction_score / len(self.daily_logs) if self.daily_logs else 0
-        report["average_emotion_score"] = report["average_satisfaction_score"]
+        report["average_emotion_score"] = total_emotion_score / len(self.daily_logs) if self.daily_logs else 0
 
         # 添加长期机制信息
         report["long_term_analysis"] = {
@@ -3107,8 +2993,7 @@ class HealthSimulation:
     def _generate_markdown_report(self, report):
         """Generate markdown summary report"""
         health_scores = report['daily_health_scores']
-        # 新字段优先，回退旧字段（兼容历史报告）
-        emotion_scores = report.get('daily_satisfaction_scores') or report.get('daily_emotion_scores', [])
+        emotion_scores = report.get('daily_emotion_scores', [])
 
         # 健康分趋势
         h_week1 = health_scores[:7] if len(health_scores) >= 7 else health_scores
@@ -3146,8 +3031,8 @@ class HealthSimulation:
 - **每日健康分**: {', '.join(str(s) for s in report['daily_health_scores'])}
 
 ## 情绪评分（满意度）
-- **平均满意度分**: {report.get('average_satisfaction_score', report.get('average_emotion_score', 0)):.2f} / 10
-- **每日满意度分**: {', '.join(str(s) for s in report.get('daily_satisfaction_scores') or report.get('daily_emotion_scores', []))}
+- **平均情绪分**: {report.get('average_emotion_score', 0):.2f} / 10
+- **每日情绪分**: {', '.join(str(s) for s in report.get('daily_emotion_scores', []))}
 
 ## 干预策略统计
 | 级别 | 次数 | 说明 |
@@ -3180,19 +3065,19 @@ class HealthSimulation:
 | 指标 | 平均分 |
 |------|--------|
 | 健康分 | {h_week1_avg:.2f} |
-| 满意度分 | {e_week1_avg:.2f} |
+| 情绪分 | {e_week1_avg:.2f} |
 
 ### 第二至三周（调整期 Days 8-21）
 | 指标 | 平均分 |
 |------|--------|
 | 健康分 | {h_week2_3_avg:.2f} |
-| 满意度分 | {e_week2_3_avg:.2f} |
+| 情绪分 | {e_week2_3_avg:.2f} |
 
 ### 第四周及以后（倦怠/稳定期 Days 22+）
 | 指标 | 平均分 |
 |------|--------|
 | 健康分 | {h_week4_6_avg:.2f} |
-| 满意度分 | {e_week4_6_avg:.2f} |
+| 情绪分 | {e_week4_6_avg:.2f} |
 
 ---
 *报告由 GenerativeAgentsCN 健康管理模拟系统自动生成*
@@ -3230,12 +3115,9 @@ class HealthSimulation:
             "summary": {
                 "total_days_completed": len(self.daily_logs),
                 "average_health_score": 0,
-                "average_satisfaction_score": 0,
                 "average_emotion_score": 0,
                 "min_health_score": 10,
                 "max_health_score": 0,
-                "min_satisfaction_score": 10,
-                "max_satisfaction_score": 0,
                 "min_emotion_score": 10,
                 "max_emotion_score": 0,
                 "total_interventions": 0,
@@ -3255,7 +3137,6 @@ class HealthSimulation:
                 "days": [],
                 "health_scores": [],
                 "emotion_scores": [],
-                "satisfaction_scores": [],
                 "intervention_levels": [],
                 "intentions": [],
                 "outcomes": [],
@@ -3279,15 +3160,7 @@ class HealthSimulation:
         for i, day_log in enumerate(self.daily_logs):
             day_num = i + 1
             health_score = day_log.get("health_score", 0)
-            # 满意度（新字段名优先，回退旧字段）
-            emotion_score = day_log.get(
-                "satisfaction_score",
-                day_log.get("emotion_score", 5.0),
-            )
-            satisfaction_breakdown = day_log.get(
-                "satisfaction_breakdown",
-                day_log.get("emotion_breakdown", {}),
-            )
+            emotion_score = day_log.get("emotion_score", 5.0)
 
             # 收集每日详细数据
             daily_entry = {
@@ -3295,11 +3168,15 @@ class HealthSimulation:
                 "date": day_log.get("date", ""),
                 "health_score": health_score,
                 "emotion_score": emotion_score,
-                "satisfaction_score": emotion_score,
-                "emotion_breakdown": satisfaction_breakdown,
-                "satisfaction_breakdown": satisfaction_breakdown,
+                "emotion_breakdown": day_log.get("emotion_breakdown", {}),
                 "events": day_log.get("events", []),
                 "interventions": day_log.get("interventions", []),
+                # 前端时间轴直接使用：只有存在有效违规/干预事件的日期才可点击
+                "display_events": day_log.get("display_events", []),
+                "has_displayable_event": day_log.get("has_displayable_event", False),
+                "display_event_count": day_log.get("display_event_count", 0),
+                "had_violation": day_log.get("had_violation", False),
+                "unblocked_violation_count": day_log.get("unblocked_violation_count", 0),
                 "reflection": day_log.get("reflection", {}),
                 "target_behaviors": day_log.get("target_behaviors", []),
                 "dynamic_phase": day_log.get("dynamic_phase", "honeymoon"),  # 动态检测的阶段
@@ -3311,19 +3188,13 @@ class HealthSimulation:
             }
             complete_results["daily_data"].append(daily_entry)
 
-            # 满意度统计
+            # 情绪分统计
             total_emotion_score += emotion_score
             complete_results["summary"]["min_emotion_score"] = min(
                 complete_results["summary"]["min_emotion_score"], emotion_score
             )
             complete_results["summary"]["max_emotion_score"] = max(
                 complete_results["summary"]["max_emotion_score"], emotion_score
-            )
-            complete_results["summary"]["min_satisfaction_score"] = min(
-                complete_results["summary"]["min_satisfaction_score"], emotion_score
-            )
-            complete_results["summary"]["max_satisfaction_score"] = max(
-                complete_results["summary"]["max_satisfaction_score"], emotion_score
             )
 
             # 汇总统计
@@ -3349,7 +3220,6 @@ class HealthSimulation:
             complete_results["trend_data"]["days"].append(day_num)
             complete_results["trend_data"]["health_scores"].append(health_score)
             complete_results["trend_data"]["emotion_scores"].append(emotion_score)
-            complete_results["trend_data"]["satisfaction_scores"].append(emotion_score)
 
             # 当日最高干预级别
             max_level = max([i.get("level", 0) for i in day_interventions]) if day_interventions else 0
@@ -3365,7 +3235,6 @@ class HealthSimulation:
         if self.daily_logs:
             complete_results["summary"]["average_health_score"] = total_score / len(self.daily_logs)
             complete_results["summary"]["average_emotion_score"] = total_emotion_score / len(self.daily_logs)
-            complete_results["summary"]["average_satisfaction_score"] = total_emotion_score / len(self.daily_logs)
             complete_results["summary"]["total_interventions"] = total_interventions
             complete_results["summary"]["violation_count"] = violations
             complete_results["summary"]["compliance_rate"] = (
@@ -3425,7 +3294,7 @@ class HealthSimulation:
                         "天数": day_data["day"],
                         "日期": day_data.get("date", ""),
                         "健康分": day_data["health_score"],
-                        "满意度分": day_data.get("satisfaction_score", day_data.get("emotion_score", 5.0)),
+                        "情绪分": day_data.get("emotion_score", 5.0),
                         "干预次数": intervention_count,
                         "最高干预级别": max_level,
                         "阶段": phase_display,
@@ -3445,9 +3314,9 @@ class HealthSimulation:
                     {"指标": "平均健康分", "值": f"{summary['average_health_score']:.2f}"},
                     {"指标": "最低健康分", "值": summary["min_health_score"]},
                     {"指标": "最高健康分", "值": summary["max_health_score"]},
-                    {"指标": "平均满意度分", "值": f"{summary.get('average_satisfaction_score', summary.get('average_emotion_score', 0)):.2f}"},
-                    {"指标": "最低满意度分", "值": f"{summary.get('min_satisfaction_score', summary.get('min_emotion_score', 0)):.1f}"},
-                    {"指标": "最高满意度分", "值": f"{summary.get('max_satisfaction_score', summary.get('max_emotion_score', 0)):.1f}"},
+                    {"指标": "平均情绪分", "值": f"{summary.get('average_emotion_score', 0):.2f}"},
+                    {"指标": "最低情绪分", "值": f"{summary.get('min_emotion_score', 0):.1f}"},
+                    {"指标": "最高情绪分", "值": f"{summary.get('max_emotion_score', 0):.1f}"},
                     {"指标": "总干预次数", "值": summary["total_interventions"]},
                     {"指标": "Level 0 (观察)", "值": summary["intervention_by_level"]["0"]},
                     {"指标": "Level 1 (劝说)", "值": summary["intervention_by_level"]["1"]},
@@ -3477,7 +3346,7 @@ class HealthSimulation:
                             "时间范围": f"Day {day_range}" if day_range != "N/A" else "N/A",
                             "总天数": phase_data.get("total_days", len(phase_data["days"])),
                             "平均健康分": f"{phase_data.get('avg_health', 0):.2f}",
-                            "平均满意度分": f"{phase_data.get('avg_emotion', 0):.2f}",
+                            "平均情绪分": f"{phase_data.get('avg_emotion', 0):.2f}",
                             "干预次数": phase_data["interventions"],
                         })
                 df_phase = pd.DataFrame(phase_rows)

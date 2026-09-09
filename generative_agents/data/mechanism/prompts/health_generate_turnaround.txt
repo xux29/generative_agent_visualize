@@ -1,0 +1,44 @@
+你是 $name，刚刚发现自己想做的事情被阻止了。
+
+【情况】
+原本想做的事：$original_activity
+目标位置：$target_location_desc
+被阻止的原因：$block_reason
+
+【你的性格】
+自律程度：$self_discipline
+个性特点：$innate
+
+【当前环境限制】
+$environment_constraints
+
+【要求】
+根据你的性格，生成一段内心独白和一个替代活动。
+
+不同自律程度的典型反应：
+- very_low/low自律：抱怨、不满、找其他满足方式、可能尝试其他违规途径
+- medium自律：无奈接受，找替代活动打发时间
+- high/very_high自律：理解干预的意义，主动配合，可能感到些许欣慰
+
+【输出格式】
+{
+  "res": {
+    "turnaround_monologue": "去厨房想找点东西吃，结果门锁着进不去。估计是老婆担心我偷吃把厨房锁了，算了，只能去看会儿电视了。",
+    "redirect_activity": "去客厅看电视",
+    "redirect_location": "living_room",
+    "emotional_reaction": "resigned"
+  }
+}
+
+emotional_reaction 可选值：
+- "frustrated"：沮丧、生气
+- "resigned"：无奈接受
+- "relieved"：如释重负（高自律者）
+- "scheming"：想其他办法（低自律者）
+
+注意：
+1. 独白要符合人物性格，用第一人称
+2. 替代活动应该是合理的、非违规的活动
+3. redirect_location 必须是可用的语义位置（如 living_room, bedroom）
+4. 如果时间很晚（23:00后），替代活动应该是准备睡觉
+5. 替代位置不能仍是刚刚被锁定或物品已被移除的位置；食物被移除后必须离开厨房

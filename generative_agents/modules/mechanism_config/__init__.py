@@ -36,8 +36,19 @@ from .schema import (
     EXCLUDED_FIELD_NAMES,
     MechanismConfigError,
     deep_merge,
+    get_by_dotted,
+    set_by_dotted,
     validate_config,
     validate_self_discipline,
+)
+from .ui_tunable import (
+    UI_TUNABLE_JSON_PATHS,
+    assert_ui_tunable_json_path,
+    is_ui_tunable_json_path,
+    list_ui_param_specs,
+    read_ui_param,
+    snapshot_ui_values,
+    write_ui_param,
 )
 from .version_store import VersionStore
 
@@ -50,13 +61,22 @@ __all__ = [
     "MechanismConfigError",
     "VersionStore",
     "deep_merge",
+    "get_by_dotted",
     "get_loaded_path",
     "get_mechanism_config",
     "get_path",
+    "is_ui_tunable_json_path",
+    "list_ui_param_specs",
     "load_defaults",
     "load_mechanism_config",
+    "read_ui_param",
     "reset_mechanism_config",
+    "set_by_dotted",
     "set_mechanism_config",
+    "snapshot_ui_values",
     "validate_config",
     "validate_self_discipline",
+    "write_ui_param",
+    "UI_TUNABLE_JSON_PATHS",
+    "assert_ui_tunable_json_path",
 ]

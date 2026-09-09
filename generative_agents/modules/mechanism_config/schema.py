@@ -27,7 +27,7 @@ EXCLUDED_FIELD_NAMES = frozenset(
 )
 
 # 顶层与二级分区（供文档/校验参考）
-TOP_LEVEL_KEYS = ("meta", "simulation", "management")
+TOP_LEVEL_KEYS = ("meta", "simulation", "management", "ui_params")
 
 SIMULATION_SECTIONS = (
     "subject",
